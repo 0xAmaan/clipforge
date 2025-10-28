@@ -8,6 +8,8 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("electronAPI", {
   // File operations
   openFile: () => ipcRenderer.invoke("open-file"),
+  saveFile: (defaultPath: string) =>
+    ipcRenderer.invoke("save-file", defaultPath),
 
   // Video operations
   getVideoMetadata: (filePath: string) =>

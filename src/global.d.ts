@@ -5,6 +5,7 @@ declare global {
     electronAPI: {
       // File operations
       openFile: () => Promise<string | null>;
+      saveFile: (defaultPath: string) => Promise<string | null>;
 
       // Video operations
       getVideoMetadata: (filePath: string) => Promise<VideoMetadata>;
