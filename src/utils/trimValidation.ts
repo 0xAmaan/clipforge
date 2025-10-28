@@ -132,10 +132,9 @@ export const generateOutputFilename = (inputPath: string): string => {
   );
 
   if (lastDot > lastSlash) {
-    // Has extension
+    // Has extension - replace with .mp4
     const nameWithoutExt = inputPath.substring(0, lastDot);
-    const ext = inputPath.substring(lastDot);
-    return `${nameWithoutExt}_trimmed${ext}`;
+    return `${nameWithoutExt}_trimmed.mp4`;
   } else {
     // No extension
     return `${inputPath}_trimmed.mp4`;
