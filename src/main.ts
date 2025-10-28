@@ -2,16 +2,30 @@ import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import path from "node:path";
 import started from "electron-squirrel-startup";
 import ffmpeg from "fluent-ffmpeg";
-import ffmpegStatic from "ffmpeg-static";
 
 // Set FFmpeg binary path with proper resolution
-const ffmpegPath = ffmpegStatic?.replace("app.asar", "app.asar.unpacked");
+// Use dynamic require to avoid Vite bundling issues
+let ffmpegPath: string | null = null;
 
-if (ffmpegPath) {
-  ffmpeg.setFfmpegPath(ffmpegPath);
-  console.log("FFmpeg path set to:", ffmpegPath);
-} else {
-  console.error("FFmpeg binary not found!");
+try {
+  // In development, use the direct import
+  if (process.env.NODE_ENV !== "production") {
+    const ffmpegStatic = require("ffmpeg-static");
+    ffmpegPath = ffmpegStatic;
+  } else {
+    // In production, resolve from node_modules
+    const ffmpegStatic = require("ffmpeg-static");
+    ffmpegPath = ffmpegStatic?.replace("app.asar", "app.asar.unpacked");
+  }
+
+  if (ffmpegPath) {
+    ffmpeg.setFfmpegPath(ffmpegPath);
+    console.log("FFmpeg path set to:", ffmpegPath);
+  } else {
+    console.error("FFmpeg binary not found!");
+  }
+} catch (error) {
+  console.error("Failed to load ffmpeg-static:", error);
 }
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
