@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun run:*)",
+      "Bash(bun run lint:*)",
+      "Bash(ls:*)",
+      "Bash(python:*)",
+      "WebFetch(domain:github.com)",
+      "mcp__context7-mcp__resolve-library-id",
+      "mcp__context7-mcp__get-library-docs"
+    ],
+    "deny": []
+  },
+  "includeCoAuthoredBy": false
+}
