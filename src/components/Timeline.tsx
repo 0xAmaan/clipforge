@@ -226,8 +226,49 @@ export const Timeline = ({
         onScroll={handleCanvasScroll}
         style={{ cursor: 'default', display: 'flex', alignItems: 'center' }}
       >
+        {/* Invisible overlay for capturing mouse events in empty space */}
+        {/* Uses pointer-events: auto but positioned behind Konva canvas (z-10) */}
+        <div
+          className="absolute"
+          style={{
+            cursor: 'default',
+            width: `${TIMELINE_WIDTH}px`,
+            height: '100%',
+            top: 0,
+            left: 0,
+            zIndex: 10, // Behind Konva Stage (which is z-index auto/0 in stacking context)
+            pointerEvents: 'auto',
+          }}
+          onMouseMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left + containerRef.current!.scrollLeft;
+            const hoveredTime = pixelsToTime(x);
+            const clampedTime = Math.max(0, Math.min(effectiveDuration, hoveredTime));
+            setScrubberTime(clampedTime);
+            setIsHovering(true);
 
-        {/* Scrubber line (red - shows on hover) - z-index: 10 */}
+            // Throttle video preview updates with requestAnimationFrame
+            if (onScrub && scrubAnimationFrameRef.current === null) {
+              scrubAnimationFrameRef.current = requestAnimationFrame(() => {
+                if (Math.abs(clampedTime - lastScrubTimeRef.current) > 0.1) {
+                  onScrub(clampedTime);
+                  lastScrubTimeRef.current = clampedTime;
+                }
+                scrubAnimationFrameRef.current = null;
+              });
+            }
+          }}
+          onMouseLeave={handleTimelineMouseLeave}
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left + containerRef.current!.scrollLeft;
+            const clickedTime = pixelsToTime(x);
+            const clampedTime = Math.max(0, Math.min(effectiveDuration, clickedTime));
+            onSeek(clampedTime);
+          }}
+        />
+
+        {/* Scrubber line (red - shows on hover) - z-index: 30 (above Konva) */}
         {isHovering && (
           <div
             className="absolute pointer-events-none"
@@ -237,12 +278,12 @@ export const Timeline = ({
               width: '2px',
               height: 'calc(100% + 24px)',
               backgroundColor: SCRUBBER_COLOR,
-              zIndex: 10,
+              zIndex: 30,
             }}
           />
         )}
 
-        {/* Playhead line (white - shows actual playback position) - z-index: 20 */}
+        {/* Playhead line (white - shows actual playback position) - z-index: 40 (above scrubber) */}
         <div
           className="absolute pointer-events-none"
           style={{
@@ -251,7 +292,7 @@ export const Timeline = ({
             width: '2px',
             height: 'calc(100% + 24px)',
             backgroundColor: 'white',
-            zIndex: 20,
+            zIndex: 40,
           }}
         />
 
@@ -260,6 +301,7 @@ export const Timeline = ({
         height={TIMELINE_HEIGHT}
         onMouseMove={handleTimelineMouseMove}
         onMouseLeave={handleTimelineMouseLeave}
+        style={{ position: 'relative', zIndex: 20, cursor: 'default' }}
       >
         <Layer>
           {/* Background - capture clicks for seeking */}

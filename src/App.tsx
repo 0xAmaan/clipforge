@@ -116,6 +116,7 @@ const App = () => {
 
   /**
    * Shared video import logic - used by both file picker and drag-drop
+   * Only adds to media library, does NOT add to timeline
    */
   const importVideoFile = async (filePath: string) => {
     // Check if already in library
@@ -123,8 +124,8 @@ const App = () => {
       (item) => item.filePath === filePath,
     );
     if (existingItem) {
-      // Already in library, just add to timeline
-      handleAddToTimeline(existingItem);
+      // Already in library, nothing to do
+      console.log('Video already in library:', existingItem.fileName);
       return;
     }
 
@@ -151,25 +152,8 @@ const App = () => {
       addedAt: Date.now(),
     };
 
-    // Add to media library
+    // Add to media library only (not to timeline)
     setMediaLibrary((prev) => [...prev, newMediaItem]);
-
-    // Create new clip at end of timeline
-    const newClip = createClip(
-      filePath,
-      videoMetadata,
-      projectState.totalDuration,
-    );
-    const updatedClips = addClip(projectState.clips, newClip);
-    const newTotalDuration = calculateTotalDuration(updatedClips);
-
-    // Update project state
-    setProjectState({
-      ...projectState,
-      clips: updatedClips,
-      totalDuration: newTotalDuration,
-      selectedClipId: newClip.id, // Auto-select newly imported clip
-    });
   };
 
   /**
@@ -690,26 +674,8 @@ You can click "Open Settings" below to go directly to the settings page.`;
         addedAt: Date.now(),
       };
 
-      // Add to media library
+      // Add to media library only (not to timeline)
       setMediaLibrary((prev) => [...prev, newMediaItem]);
-
-      // Create new clip at end of timeline
-      const newClip = createClip(
-        filePath,
-        correctedMetadata,
-        projectState.totalDuration,
-      );
-      const updatedClips = addClip(projectState.clips, newClip);
-      const newTotalDuration = calculateTotalDuration(updatedClips);
-
-      // Update project state - ensure totalDuration is always a number
-      setProjectState({
-        ...projectState,
-        clips: updatedClips,
-        totalDuration:
-          typeof newTotalDuration === "number" ? newTotalDuration : 0,
-        selectedClipId: newClip.id,
-      });
 
       // Reset recording state
       setRecordingState({

@@ -107,6 +107,7 @@ const ThumbnailImage = ({
       clipY={0}
       clipWidth={thumbWidth}
       clipHeight={clipHeight}
+      listening={false}
     >
       <KonvaImage
         image={image}
@@ -114,6 +115,7 @@ const ThumbnailImage = ({
         y={offsetY}
         width={renderWidth}
         height={renderHeight}
+        listening={false}
       />
     </Group>
   );
@@ -220,14 +222,6 @@ export const ClipItem = ({
         onDragEnd={handleClipDragEnd}
         onClick={onSelect}
         onTap={onSelect}
-        onMouseEnter={(e) => {
-          const container = e.target.getStage()?.container();
-          if (container) container.style.cursor = "move";
-        }}
-        onMouseLeave={(e) => {
-          const container = e.target.getStage()?.container();
-          if (container) container.style.cursor = "default";
-        }}
       />
     );
 
@@ -261,24 +255,39 @@ export const ClipItem = ({
           fontSize={14}
           fill="white"
           fontStyle="bold"
+          listening={false}
         />
       );
     }
 
     // Text overlay with clip name (no background)
-    elements.push(
-      <Text
-        key="text-overlay"
-        x={clipX + 6}
-        y={CLIP_Y + 5}
-        text={fileName}
-        fontSize={13}
-        fill="white"
-        fontStyle="bold"
-        width={clipWidth - 12}
-        ellipsis={true}
-      />
-    );
+    // For very narrow clips, truncate to single characters or hide text entirely
+    let displayText = fileName;
+    if (clipWidth < 30) {
+      // Hide text for extremely narrow clips
+      displayText = '';
+    } else if (clipWidth < 60) {
+      // Show only first character for narrow clips
+      displayText = fileName.charAt(0);
+    }
+
+    if (displayText) {
+      elements.push(
+        <Text
+          key="text-overlay"
+          x={clipX + 6}
+          y={CLIP_Y + 5}
+          text={displayText}
+          fontSize={13}
+          fill="white"
+          fontStyle="bold"
+          width={clipWidth - 12}
+          ellipsis={true}
+          wrap="none"
+          listening={false}
+        />
+      );
+    }
 
     return elements;
   };
@@ -287,6 +296,19 @@ export const ClipItem = ({
     <Group>
       {/* Clip Body with Thumbnails */}
       {renderClipContent()}
+
+      {/* Transparent overlay to capture all clicks on the clip */}
+      <Rect
+        x={clipX}
+        y={CLIP_Y}
+        width={clipWidth}
+        height={CLIP_HEIGHT}
+        fill="transparent"
+        onClick={onSelect}
+        onTap={onSelect}
+        draggable
+        onDragEnd={handleClipDragEnd}
+      />
 
       {/* Left Trim Area - invisible with cursor change */}
       {isSelected && (
