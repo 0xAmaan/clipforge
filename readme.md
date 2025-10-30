@@ -21,12 +21,13 @@ A lightweight, native macOS screen recording and video editing application built
 
 ### Installation
 
-1. Clone the repo — `git clone https://github.com/0xAmaan/clipforge.git .`
-2. Install dependencies `bun i`
-3. Build the application `bun make`
-4. Set Permissions (most annoying part)
+1. Clone the repo — `git clone https://github.com/0xAmaan/clipforge.git`
+2. `cd clipforge`
+3. Install dependencies `bun i`
+4. Build the application `bun make`
+5. Set Permissions (most annoying part)
    1. System Settings > Privacy & Security > Screen & System Audio Recording
    2. Click the + and add the clipforge application from step 3 (in clipforge/out/clipforge-darwin-arm64/clipforge.app)
-5. Open app
-6. Confirm permission settings
-7. Should work smoothly!
+6. Open app
+7. Confirm permission settings
+8. Should work smoothly!
