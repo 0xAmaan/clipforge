@@ -1,21 +1,32 @@
 import { useState, useEffect } from 'react';
-import { ExportProps } from '../types';
-import { validateTrimTimes, generateOutputFilename, formatTime } from '../utils/trimValidation';
+import { MultiClipExportProps, ExportOptions } from '../types';
+import { formatTime } from '../utils/timeFormat';
+import { prepareExportCommand, validateExportData } from '../utils/exportManager';
 
 /**
- * ExportButton Component
- * Handles video export with progress tracking and error handling
+ * ExportButton Component - Multi-Clip Support
+ * Handles multi-clip video export with mode selection (fast/re-encode)
+ * and progress tracking
  */
-const ExportButton = ({ videoPath, trimStart, trimEnd, onExportComplete }: ExportProps) => {
+const ExportButton = ({ clips, onExportComplete }: MultiClipExportProps) => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [exportMessage, setExportMessage] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  // Export options state
+  const [exportMode, setExportMode] = useState<"fast" | "reencode">("fast");
+  const [resolution, setResolution] = useState<"720p" | "1080p" | "source">("source");
+
+  // Calculate total duration
+  const totalDuration = clips.reduce((sum, clip) => sum + clip.duration, 0);
+
   // Set up progress listener on mount
   useEffect(() => {
-    window.electronAPI.onExportProgress((progress: number) => {
+    window.electronAPI.onExportProgress((progress: number, message?: string) => {
       setExportProgress(Math.round(progress));
+      if (message) setExportMessage(message);
     });
   }, []);
 
@@ -25,20 +36,23 @@ const ExportButton = ({ videoPath, trimStart, trimEnd, onExportComplete }: Expor
       setError(null);
       setSuccessMessage(null);
       setExportProgress(0);
+      setExportMessage('');
 
-      // Get video duration from metadata (we'll need this from App.tsx)
-      // For now, we'll validate using trimEnd as the max duration
-      const duration = trimEnd; // This assumes trimEnd is the video duration initially
+      // Validate clips
+      const options: ExportOptions = {
+        mode: exportMode,
+        resolution: exportMode === "reencode" ? resolution : undefined,
+      };
 
-      // Validate trim times
-      const validation = validateTrimTimes(trimStart, trimEnd, duration);
-      if (!validation.isValid) {
-        setError(validation.error || 'Invalid trim times');
+      const validation = validateExportData(clips, options);
+      if (!validation.valid) {
+        setError(validation.error || 'Invalid export data');
         return;
       }
 
-      // Generate suggested output filename
-      const suggestedFilename = generateOutputFilename(videoPath);
+      // Generate output filename
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      const suggestedFilename = `clipforge-export-${timestamp}.mp4`;
 
       // Show save dialog
       const outputPath = await window.electronAPI.saveFile(suggestedFilename);
@@ -48,55 +62,149 @@ const ExportButton = ({ videoPath, trimStart, trimEnd, onExportComplete }: Expor
         return;
       }
 
+      // Prepare export command
+      const exportCommand = prepareExportCommand(clips, outputPath, options);
+
       // Start export
       setIsExporting(true);
+      setExportMessage('Preparing export...');
 
-      // Trim video using FFmpeg
-      const result = await window.electronAPI.trimVideo(
-        videoPath,
+      console.log('Starting multi-clip export:', {
+        clips: clips.length,
+        mode: exportMode,
+        resolution: resolution,
+      });
+
+      // Export multiple clips using FFmpeg
+      const result = await window.electronAPI.exportMultiClip(
+        exportCommand.clips,
         outputPath,
-        trimStart,
-        trimEnd
+        { mode: exportMode, resolution: exportMode === "reencode" ? resolution : undefined }
       );
 
       // Success!
       setIsExporting(false);
       setSuccessMessage(`Video exported successfully to: ${result}`);
+      setExportMessage('');
 
       // Call the completion callback
       onExportComplete(result);
 
     } catch (err) {
       setIsExporting(false);
+      setExportMessage('');
       setError(err instanceof Error ? err.message : 'Export failed');
       console.error('Export error:', err);
     }
   };
 
   return (
-    <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+    <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* Export Info */}
       <div style={{
         fontSize: '14px',
-        color: '#6b7280',
+        color: '#888',
         display: 'flex',
-        gap: '16px'
+        gap: '16px',
+        padding: '12px',
+        backgroundColor: '#1a1a1a',
+        borderRadius: '6px',
       }}>
         <span>
-          <strong>Trim Start:</strong> {formatTime(trimStart)}
+          <strong style={{ color: '#fff' }}>Clips:</strong> {clips.length}
         </span>
         <span>
-          <strong>Trim End:</strong> {formatTime(trimEnd)}
+          <strong style={{ color: '#fff' }}>Total Duration:</strong> {formatTime(totalDuration)}
         </span>
-        <span>
-          <strong>Duration:</strong> {formatTime(trimEnd - trimStart)}
-        </span>
+      </div>
+
+      {/* Export Mode Selection */}
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px',
+        padding: '12px',
+        backgroundColor: '#1a1a1a',
+        borderRadius: '6px',
+      }}>
+        <label style={{ fontSize: '14px', fontWeight: '600', color: '#fff' }}>
+          Export Mode:
+        </label>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button
+            onClick={() => setExportMode("fast")}
+            style={{
+              flex: 1,
+              padding: '10px',
+              fontSize: '14px',
+              fontWeight: '600',
+              backgroundColor: exportMode === "fast" ? '#3b82f6' : '#333',
+              color: 'white',
+              border: exportMode === "fast" ? '2px solid #60a5fa' : '1px solid #555',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+            }}
+          >
+            Fast (Copy)
+          </button>
+          <button
+            onClick={() => setExportMode("reencode")}
+            style={{
+              flex: 1,
+              padding: '10px',
+              fontSize: '14px',
+              fontWeight: '600',
+              backgroundColor: exportMode === "reencode" ? '#3b82f6' : '#333',
+              color: 'white',
+              border: exportMode === "reencode" ? '2px solid #60a5fa' : '1px solid #555',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+            }}
+          >
+            Re-encode
+          </button>
+        </div>
+
+        {/* Mode Description */}
+        <div style={{ fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+          {exportMode === "fast"
+            ? "Fast mode: No re-encoding, quick export (same quality)"
+            : "Re-encode mode: Transcode video with resolution options (slower)"}
+        </div>
+
+        {/* Resolution Selector (only for re-encode mode) */}
+        {exportMode === "reencode" && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            <label style={{ fontSize: '14px', fontWeight: '600', color: '#fff' }}>
+              Resolution:
+            </label>
+            <select
+              value={resolution}
+              onChange={(e) => setResolution(e.target.value as "720p" | "1080p" | "source")}
+              style={{
+                padding: '8px 12px',
+                fontSize: '14px',
+                backgroundColor: '#333',
+                color: '#fff',
+                border: '1px solid #555',
+                borderRadius: '6px',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="source">Source (Original)</option>
+              <option value="720p">720p (1280x720)</option>
+              <option value="1080p">1080p (1920x1080)</option>
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Export Button */}
       <button
         onClick={handleExport}
-        disabled={isExporting || !videoPath}
+        disabled={isExporting || clips.length === 0}
         style={{
           padding: '12px 24px',
           fontSize: '16px',
@@ -105,41 +213,54 @@ const ExportButton = ({ videoPath, trimStart, trimEnd, onExportComplete }: Expor
           color: 'white',
           border: 'none',
           borderRadius: '8px',
-          cursor: isExporting || !videoPath ? 'not-allowed' : 'pointer',
+          cursor: isExporting || clips.length === 0 ? 'not-allowed' : 'pointer',
           transition: 'background-color 0.2s',
-          opacity: isExporting || !videoPath ? 0.6 : 1,
+          opacity: isExporting || clips.length === 0 ? 0.6 : 1,
         }}
         onMouseEnter={(e) => {
-          if (!isExporting && videoPath) {
+          if (!isExporting && clips.length > 0) {
             e.currentTarget.style.backgroundColor = '#059669';
           }
         }}
         onMouseLeave={(e) => {
-          if (!isExporting && videoPath) {
+          if (!isExporting && clips.length > 0) {
             e.currentTarget.style.backgroundColor = '#10b981';
           }
         }}
       >
-        {isExporting ? `Exporting... ${exportProgress}%` : 'Export Trimmed Video'}
+        {isExporting ? `Exporting... ${exportProgress}%` : `Export ${clips.length} Clip${clips.length !== 1 ? 's' : ''}`}
       </button>
 
       {/* Progress Bar */}
       {isExporting && (
-        <div style={{
-          width: '100%',
-          height: '8px',
-          backgroundColor: '#e5e7eb',
-          borderRadius: '4px',
-          overflow: 'hidden',
-        }}>
-          <div
-            style={{
-              width: `${exportProgress}%`,
-              height: '100%',
-              backgroundColor: '#10b981',
-              transition: 'width 0.3s ease',
-            }}
-          />
+        <div>
+          <div style={{
+            width: '100%',
+            height: '8px',
+            backgroundColor: '#333',
+            borderRadius: '4px',
+            overflow: 'hidden',
+            marginBottom: '8px',
+          }}>
+            <div
+              style={{
+                width: `${exportProgress}%`,
+                height: '100%',
+                backgroundColor: '#10b981',
+                transition: 'width 0.3s ease',
+              }}
+            />
+          </div>
+          {exportMessage && (
+            <div style={{
+              fontSize: '12px',
+              color: '#888',
+              textAlign: 'center',
+              fontStyle: 'italic',
+            }}>
+              {exportMessage}
+            </div>
+          )}
         </div>
       )}
 
@@ -147,11 +268,12 @@ const ExportButton = ({ videoPath, trimStart, trimEnd, onExportComplete }: Expor
       {successMessage && (
         <div style={{
           padding: '12px',
-          backgroundColor: '#d1fae5',
-          color: '#065f46',
+          backgroundColor: '#064e3b',
+          color: '#6ee7b7',
           borderRadius: '6px',
           fontSize: '14px',
           wordBreak: 'break-word',
+          border: '1px solid #10b981',
         }}>
           ✓ {successMessage}
         </div>
@@ -161,10 +283,11 @@ const ExportButton = ({ videoPath, trimStart, trimEnd, onExportComplete }: Expor
       {error && (
         <div style={{
           padding: '12px',
-          backgroundColor: '#fee2e2',
-          color: '#991b1b',
+          backgroundColor: '#7f1d1d',
+          color: '#fca5a5',
           borderRadius: '6px',
           fontSize: '14px',
+          border: '1px solid #dc2626',
         }}>
           ✗ {error}
         </div>

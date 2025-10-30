@@ -6,6 +6,7 @@ declare global {
       // File operations
       openFile: () => Promise<string | null>;
       saveFile: (defaultPath: string) => Promise<string | null>;
+      getFileUrl: (filePath: string) => string;
 
       // Video operations
       getVideoMetadata: (filePath: string) => Promise<VideoMetadata>;
@@ -15,11 +16,57 @@ declare global {
         start: number,
         end: number,
       ) => Promise<string>;
+      exportMultiClip: (
+        clips: Array<{
+          sourceFilePath: string;
+          sourceStart: number;
+          sourceEnd: number;
+        }>,
+        outputPath: string,
+        options: { mode: "fast" | "reencode"; resolution?: string },
+      ) => Promise<string>;
 
       // Progress updates
-      onExportProgress: (callback: (progress: number) => void) => void;
+      onExportProgress: (
+        callback: (progress: number, message?: string) => void,
+      ) => void;
+
+      // Screen recording operations
+      checkScreenRecordingPermission: () => Promise<PermissionStatus>;
+      getScreenSources: () => Promise<ScreenSource[]>;
+      saveRecording: (buffer: ArrayBuffer, filename: string) => Promise<string>;
+      openSystemSettings: () => Promise<void>;
+
+      // screencapture recording
+      getAVFoundationDisplays: () => Promise<AVFoundationDisplay[]>;
+      startFFmpegRecording: (
+        displayId: string,
+        filename: string,
+      ) => Promise<string>;
+      stopFFmpegRecording: () => Promise<boolean>;
+      convertMovToMp4: (movPath: string) => Promise<string>;
+
+      // Media library operations
+      generateThumbnail: (filePath: string) => Promise<string>;
+      getFileSize: (filePath: string) => Promise<number>;
+      saveMediaLibrary: (items: MediaItem[]) => Promise<boolean>;
+      loadMediaLibrary: () => Promise<MediaItem[]>;
+      deleteFile: (filePath: string) => Promise<boolean>;
     };
   }
+}
+
+export interface ScreenSource {
+  id: string;
+  name: string;
+  thumbnail: string;
+  type: "screen" | "window";
+}
+
+export interface AVFoundationDisplay {
+  id: string;
+  name: string;
+  type: "screen";
 }
 
 export interface VideoMetadata {
@@ -62,4 +109,29 @@ export interface ExportProps {
   trimStart: number;
   trimEnd: number;
   onExportComplete: (outputPath: string) => void;
+}
+
+export interface MediaItem {
+  id: string;
+  filePath: string;
+  fileName: string;
+  thumbnail: string;
+  duration: number;
+  resolution: string;
+  fileSize: number;
+  addedAt: number;
+}
+
+export interface PermissionStatus {
+  status:
+    | "not-determined"
+    | "granted"
+    | "denied"
+    | "restricted"
+    | "unknown"
+    | "not-applicable";
+  platform: string;
+  granted: boolean;
+  isDevelopment: boolean;
+  executablePath?: string;
 }

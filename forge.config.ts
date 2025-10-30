@@ -12,6 +12,18 @@ const config: ForgeConfig = {
     asar: {
       unpack: "**/node_modules/ffmpeg-static/**/*",
     },
+    // macOS Info.plist configuration for permissions
+    extendInfo: {
+      // Screen recording permission description
+      NSScreenCaptureDescription:
+        "ClipForge needs screen recording permission to capture your screen and create video recordings.",
+      // Microphone permission (for audio capture during screen recording)
+      NSMicrophoneUsageDescription:
+        "ClipForge needs microphone access to record audio during screen recordings.",
+      // Camera permission (for webcam recording - Phase 2 feature)
+      NSCameraUsageDescription:
+        "ClipForge needs camera access to record from your webcam.",
+    },
   },
   rebuildConfig: {},
   makers: [

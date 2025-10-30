@@ -1,5 +1,17 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  desktopCapturer,
+  session,
+  shell,
+  systemPreferences,
+  protocol,
+} from "electron";
 import path from "node:path";
+import fs from "node:fs";
+import { spawn, ChildProcess } from "node:child_process";
 import started from "electron-squirrel-startup";
 import ffmpeg from "fluent-ffmpeg";
 
@@ -33,6 +45,145 @@ if (started) {
   app.quit();
 }
 
+// Register custom protocol for secure local file access with byte-range support
+const registerProtocols = () => {
+  console.log("[Protocol] ========== REGISTERING PROTOCOL ==========");
+  console.log("[Protocol] protocol.handle available?", typeof protocol.handle);
+
+  protocol.handle("safe-file", async (request) => {
+    console.log("[Protocol] ========== NEW REQUEST ==========");
+    console.log("[Protocol] Full URL:", request.url);
+    console.log("[Protocol] Method:", request.method);
+
+    try {
+      const url = request.url.replace("safe-file://", "");
+      // Decode each path segment individually (matching the encoding in preload.ts)
+      const pathSegments = url.split("/");
+      const filePath = pathSegments
+        .map((segment) => decodeURIComponent(segment))
+        .join("/");
+
+      console.log("[Protocol] Decoded path:", filePath);
+      console.log("[Protocol] File exists?", fs.existsSync(filePath));
+
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        console.error("[Protocol] ❌ File not found:", filePath);
+        return new Response("File not found", { status: 404 });
+      }
+
+      // Get file stats
+      const stats = fs.statSync(filePath);
+      const fileSize = stats.size;
+      const contentType = getContentType(filePath);
+
+      console.log("[Protocol] File size:", fileSize, "bytes");
+      console.log("[Protocol] Content type:", contentType);
+
+      // Check for range header (needed for video seeking)
+      const rangeHeader = request.headers.get("range");
+      console.log("[Protocol] Range header:", rangeHeader || "none");
+
+      if (rangeHeader) {
+        // Parse range header: "bytes=start-end"
+        const parts = rangeHeader.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunkSize = end - start + 1;
+
+        console.log(
+          `[Protocol] ✅ Range request: ${start}-${end}/${fileSize} (${chunkSize} bytes)`,
+        );
+
+        // Read the specific byte range
+        const buffer = Buffer.alloc(chunkSize);
+        const fd = fs.openSync(filePath, "r");
+        fs.readSync(fd, buffer, 0, chunkSize, start);
+        fs.closeSync(fd);
+
+        console.log(
+          `[Protocol] ✅ Returning ${buffer.length} bytes with 206 Partial Content`,
+        );
+
+        return new Response(buffer, {
+          status: 206, // Partial Content
+          headers: {
+            "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+            "Accept-Ranges": "bytes",
+            "Content-Length": chunkSize.toString(),
+            "Content-Type": contentType,
+          },
+        });
+      } else {
+        // Serve entire file
+        console.log(`[Protocol] ✅ Full file request: ${fileSize} bytes`);
+        const buffer = fs.readFileSync(filePath);
+
+        console.log(
+          `[Protocol] ✅ Returning ${buffer.length} bytes with 200 OK`,
+        );
+
+        return new Response(buffer, {
+          status: 200,
+          headers: {
+            "Content-Length": fileSize.toString(),
+            "Accept-Ranges": "bytes",
+            "Content-Type": contentType,
+          },
+        });
+      }
+    } catch (error) {
+      console.error("[Protocol] ❌ Error serving file:", error);
+      console.error("[Protocol] Error stack:", (error as Error).stack);
+      return new Response("Internal Server Error", { status: 500 });
+    }
+  });
+
+  console.log("[Protocol] ========== PROTOCOL REGISTERED ==========");
+};
+
+// Helper: Get content type from file extension
+const getContentType = (filePath: string): string => {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+  };
+  return mimeTypes[ext] || "application/octet-stream";
+};
+
+// Set up Content Security Policy via session headers
+// Must be set up before creating windows
+const setupCSP = () => {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const isDevelopment = process.env.NODE_ENV !== "production";
+
+    // Build CSP based on environment
+    const cspDirectives = [
+      "default-src 'self' safe-file:",
+      isDevelopment
+        ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" // Allow eval in dev for Vite HMR
+        : "script-src 'self' 'unsafe-inline'", // No eval in production
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: file: safe-file: blob:",
+      "media-src 'self' file: safe-file: blob:",
+      "connect-src 'self' ws: wss:",
+    ];
+
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [cspDirectives.join("; ")],
+      },
+    });
+  });
+};
+
 const createWindow = () => {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -54,14 +205,37 @@ const createWindow = () => {
     );
   }
 
-  // Open the DevTools.
-  mainWindow.webContents.openDevTools();
+  // Open DevTools only in development
+  if (process.env.NODE_ENV !== "production") {
+    mainWindow.webContents.openDevTools();
+  }
+
+  // Setup display media request handler for screen recording
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (request, callback) => {
+      desktopCapturer.getSources({ types: ["screen", "window"] }).then(
+        (sources) => {
+          // Grant access to the first screen found
+          callback({ video: sources[0], audio: "loopback" });
+        },
+        (error) => {
+          console.error("Error getting desktop sources:", error);
+          callback({});
+        },
+      );
+    },
+    { useSystemPicker: true },
+  );
 };
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.on("ready", createWindow);
+app.whenReady().then(() => {
+  registerProtocols();
+  setupCSP();
+  createWindow();
+});
 
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
@@ -116,7 +290,10 @@ ipcMain.handle("save-file", async (event, defaultPath: string) => {
 // Handler: Get video metadata
 ipcMain.handle("get-video-metadata", async (event, filePath: string) => {
   return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
+    // For WebM files, we need to probe more thoroughly
+    const probeOptions = ["-v", "error", "-show_format", "-show_streams"];
+
+    ffmpeg.ffprobe(filePath, probeOptions, (err, metadata) => {
       if (err) {
         console.error("FFprobe error:", err);
         reject(err);
@@ -138,8 +315,32 @@ ipcMain.handle("get-video-metadata", async (event, filePath: string) => {
         fps = num / den;
       }
 
+      // Try multiple sources for duration, as WebM files can be tricky
+      let duration = 0;
+
+      // First try format duration
+      if (metadata.format.duration && metadata.format.duration > 0) {
+        duration = metadata.format.duration;
+      }
+      // Then try stream duration
+      else if (videoStream.duration && videoStream.duration > 0) {
+        duration = videoStream.duration;
+      }
+      // Calculate from nb_frames if available
+      else if (videoStream.nb_frames && fps > 0) {
+        duration = parseInt(videoStream.nb_frames) / fps;
+        console.log(
+          `[FFprobe] Calculated duration from frames: ${duration}s (${videoStream.nb_frames} frames @ ${fps}fps)`,
+        );
+      }
+
+      console.log(`[FFprobe] File: ${filePath}`);
+      console.log(`[FFprobe] Format duration: ${metadata.format.duration}`);
+      console.log(`[FFprobe] Stream duration: ${videoStream.duration}`);
+      console.log(`[FFprobe] Final duration: ${duration}`);
+
       resolve({
-        duration: metadata.format.duration || 0,
+        duration,
         width: videoStream.width || 0,
         height: videoStream.height || 0,
         fps,
@@ -188,3 +389,796 @@ ipcMain.handle(
     });
   },
 );
+
+// Handler: Export multiple clips (concat)
+ipcMain.handle(
+  "export-multi-clip",
+  async (
+    event,
+    clips: Array<{
+      sourceFilePath: string;
+      sourceStart: number;
+      sourceEnd: number;
+    }>,
+    outputPath: string,
+    options: { mode: "fast" | "reencode"; resolution?: string },
+  ) => {
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+
+    return new Promise(async (resolve, reject) => {
+      try {
+        console.log(`Exporting ${clips.length} clips to: ${outputPath}`);
+        console.log(`Mode: ${options.mode}`);
+
+        // Create temp directory for intermediate files
+        const tempDir = path.join(
+          app.getPath("temp"),
+          `clipforge-${Date.now()}`,
+        );
+        fs.mkdirSync(tempDir, { recursive: true });
+
+        // Step 1: Trim all clips individually
+        const trimmedClipPaths: string[] = [];
+
+        for (let i = 0; i < clips.length; i++) {
+          const clip = clips[i];
+          const trimmedPath = path.join(tempDir, `clip_${i}.mp4`);
+
+          console.log(`Trimming clip ${i + 1}/${clips.length}...`);
+
+          await new Promise((resolveTrim, rejectTrim) => {
+            ffmpeg(clip.sourceFilePath)
+              .setStartTime(clip.sourceStart)
+              .setDuration(clip.sourceEnd - clip.sourceStart)
+              .outputOptions("-c copy") // Fast trim
+              .output(trimmedPath)
+              .on("start", (cmd) => {
+                console.log(`FFmpeg trim command: ${cmd}`);
+              })
+              .on("progress", (progress) => {
+                const clipProgress = (i / clips.length) * 100;
+                const totalProgress =
+                  clipProgress + (progress.percent || 0) / clips.length;
+                if (mainWindow) {
+                  mainWindow.webContents.send(
+                    "export-progress",
+                    totalProgress,
+                    `Trimming clip ${i + 1}/${clips.length}...`,
+                  );
+                }
+              })
+              .on("end", () => {
+                console.log(`Clip ${i + 1} trimmed successfully`);
+                trimmedClipPaths.push(trimmedPath);
+                resolveTrim(trimmedPath);
+              })
+              .on("error", rejectTrim)
+              .run();
+          });
+        }
+
+        // Step 2: Create concat file list
+        const concatFilePath = path.join(tempDir, "concat.txt");
+        const concatContent = trimmedClipPaths
+          .map((p) => `file '${p}'`)
+          .join("\n");
+        fs.writeFileSync(concatFilePath, concatContent);
+
+        console.log("Concat file created:", concatFilePath);
+
+        // Step 3: Concatenate all clips
+        console.log("Concatenating clips...");
+
+        if (mainWindow) {
+          mainWindow.webContents.send(
+            "export-progress",
+            50,
+            "Concatenating clips...",
+          );
+        }
+
+        const command = ffmpeg()
+          .input(concatFilePath)
+          .inputOptions(["-f concat", "-safe 0"]);
+
+        // Apply mode-specific options
+        if (options.mode === "fast") {
+          // Fast mode: copy streams (no re-encode)
+          command.outputOptions("-c copy");
+        } else {
+          // Re-encode mode: transcode with quality settings
+          command
+            .outputOptions("-c:v libx264") // H.264 codec
+            .outputOptions("-preset medium") // Balance speed/quality
+            .outputOptions("-crf 23") // Quality (lower = better)
+            .outputOptions("-c:a aac") // AAC audio
+            .outputOptions("-b:a 192k"); // Audio bitrate
+
+          // Apply resolution scaling if specified
+          if (options.resolution && options.resolution !== "source") {
+            const resolutionMap: Record<string, string> = {
+              "720p": "1280:720",
+              "1080p": "1920:1080",
+            };
+            const scale = resolutionMap[options.resolution];
+            if (scale) {
+              command.outputOptions([`-vf scale=${scale}`]);
+            }
+          }
+        }
+
+        command
+          .output(outputPath)
+          .on("start", (cmd) => {
+            console.log(`FFmpeg concat command: ${cmd}`);
+          })
+          .on("progress", (progress) => {
+            const percent = 50 + (progress.percent || 0) / 2; // 50-100%
+            if (mainWindow) {
+              mainWindow.webContents.send(
+                "export-progress",
+                percent,
+                "Finalizing export...",
+              );
+            }
+          })
+          .on("end", () => {
+            console.log("Export complete!");
+            // Clean up temp files
+            fs.rmSync(tempDir, { recursive: true, force: true });
+            resolve(outputPath);
+          })
+          .on("error", (err) => {
+            console.error("FFmpeg concat error:", err);
+            // Clean up temp files
+            fs.rmSync(tempDir, { recursive: true, force: true });
+            reject(err);
+          })
+          .run();
+      } catch (error) {
+        console.error("Export error:", error);
+        reject(error);
+      }
+    });
+  },
+);
+
+// Handler: Check screen recording permission status
+ipcMain.handle("check-screen-recording-permission", async () => {
+  try {
+    // Check permission status using systemPreferences (macOS only)
+    if (process.platform === "darwin") {
+      const status = systemPreferences.getMediaAccessStatus("screen");
+      console.log("[Permission Check] Screen recording status:", status);
+
+      // Log additional diagnostic info for development
+      console.log("[Permission Check] Process executable:", process.execPath);
+      console.log("[Permission Check] App name:", app.getName());
+      console.log("[Permission Check] App path:", app.getPath("exe"));
+
+      return {
+        status,
+        platform: "darwin",
+        granted: status === "granted",
+        // Provide helpful context for development vs production
+        isDevelopment: process.env.NODE_ENV !== "production",
+        executablePath: process.execPath,
+      };
+    } else {
+      // On non-macOS platforms, screen recording doesn't require special permissions
+      return {
+        status: "not-applicable",
+        platform: process.platform,
+        granted: true,
+        isDevelopment: process.env.NODE_ENV !== "production",
+      };
+    }
+  } catch (error) {
+    console.error("[Permission Check] Error checking permission:", error);
+    throw error;
+  }
+});
+
+// Handler: Get available screen sources for recording
+ipcMain.handle("get-screen-sources", async () => {
+  try {
+    console.log("[Screen Sources] Attempting to get screen sources...");
+
+    // On macOS Sequoia+, systemPreferences.getMediaAccessStatus('screen') is unreliable
+    // It often returns 'denied' even when permission is granted in System Settings
+    // Instead, we just try to get sources - that's the real permission test
+    if (process.platform === "darwin") {
+      const permStatus = systemPreferences.getMediaAccessStatus("screen");
+      console.log(
+        "[Screen Sources] Permission status from system API:",
+        permStatus,
+      );
+      console.log(
+        "[Screen Sources] Note: This API is unreliable on macOS Sequoia - trying to get sources anyway...",
+      );
+    }
+
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 150, height: 150 },
+    });
+
+    console.log(
+      `[Screen Sources] Successfully retrieved ${sources.length} sources`,
+    );
+
+    if (sources.length === 0) {
+      console.error(
+        "[Screen Sources] No sources returned - permission likely denied",
+      );
+      throw new Error(
+        "PERMISSION_DENIED: No screen sources available. Screen recording permission may be required.",
+      );
+    }
+
+    return sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      thumbnail: source.thumbnail.toDataURL(),
+      type: source.id.startsWith("screen:") ? "screen" : "window",
+    }));
+  } catch (error) {
+    console.error("[Screen Sources] Error:", error);
+
+    // Provide user-friendly error message
+    const errorMessage =
+      error instanceof Error ? error.message : "Failed to get sources";
+
+    // Always prefix with PERMISSION_DENIED so renderer knows how to handle it
+    if (errorMessage.startsWith("PERMISSION_DENIED:")) {
+      throw new Error(errorMessage);
+    }
+
+    throw new Error(`PERMISSION_DENIED: ${errorMessage}`);
+  }
+});
+
+// Handler: Save recording to file
+ipcMain.handle(
+  "save-recording",
+  async (event, buffer: ArrayBuffer, filename: string) => {
+    try {
+      // Use the user's Videos folder for recordings
+      const videosPath = app.getPath("videos") || app.getPath("documents");
+      const outputPath = path.join(videosPath, filename);
+
+      // Write the buffer to file
+      await fs.promises.writeFile(outputPath, Buffer.from(buffer));
+
+      console.log("Recording saved to:", outputPath);
+      return outputPath;
+    } catch (error) {
+      console.error("Error saving recording:", error);
+      throw error;
+    }
+  },
+);
+
+// screencapture recording process reference
+let screencaptureRecordingProcess: ChildProcess | null = null;
+
+// Helper: Parse FFmpeg exit codes and provide meaningful error messages
+const parseFFmpegExitCode = (
+  code: number | null,
+  errorOutput: string,
+): string => {
+  // Check for specific error patterns in output
+  if (errorOutput.includes("denied") || errorOutput.includes("permission")) {
+    return "FFmpeg recording failed: Screen recording permission denied. Please grant permission in System Settings > Privacy & Security > Screen Recording.";
+  }
+
+  if (
+    errorOutput.includes("Unsupported pixel format") ||
+    errorOutput.includes("Incompatible pixel format")
+  ) {
+    return "FFmpeg recording failed: Incompatible pixel format. This is a configuration error.";
+  }
+
+  if (
+    errorOutput.includes("No such device") ||
+    errorOutput.includes("device not found")
+  ) {
+    return "FFmpeg recording failed: Display or audio device not found.";
+  }
+
+  if (errorOutput.includes("Input/output error")) {
+    return "FFmpeg recording failed: I/O error accessing the display or audio device.";
+  }
+
+  // Generic exit code messages
+  if (code === null) {
+    return `FFmpeg recording failed to start within timeout. Error: ${errorOutput.slice(-300)}`;
+  }
+
+  if (code === 1) {
+    return `FFmpeg recording failed with error code 1 (general error). Check permissions and device availability. Error: ${errorOutput.slice(-300)}`;
+  }
+
+  if (code === 255) {
+    return `FFmpeg recording failed with error code 255. This usually indicates a configuration or compatibility issue. Error: ${errorOutput.slice(-300)}`;
+  }
+
+  return `FFmpeg recording failed with exit code ${code}. Error: ${errorOutput.slice(-300)}`;
+};
+
+// Handler: Get available displays for screencapture
+ipcMain.handle("get-avfoundation-displays", async () => {
+  return new Promise((resolve, reject) => {
+    console.log("[screencapture] Enumerating available displays...");
+
+    // screencapture doesn't have a built-in list command, so we'll query system displays
+    // Using system_profiler to get display information
+    const process = spawn("system_profiler", ["SPDisplaysDataType", "-json"]);
+
+    let stdout = "";
+    let stderr = "";
+
+    process.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    process.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    process.on("close", (code) => {
+      if (code !== 0) {
+        console.error("[screencapture] Error listing displays:", stderr);
+        // Fallback to default displays
+        const defaultDisplays = [
+          { id: "1", name: "Main Display", type: "screen" },
+          { id: "2", name: "Display 2", type: "screen" },
+        ];
+        resolve(defaultDisplays);
+        return;
+      }
+
+      try {
+        const data = JSON.parse(stdout);
+        const displays: Array<{ id: string; name: string; type: string }> = [];
+
+        // Parse display information
+        if (data.SPDisplaysDataType && Array.isArray(data.SPDisplaysDataType)) {
+          data.SPDisplaysDataType.forEach((gpu: any, gpuIndex: number) => {
+            if (gpu.spdisplays_ndrvs && Array.isArray(gpu.spdisplays_ndrvs)) {
+              gpu.spdisplays_ndrvs.forEach(
+                (display: any, displayIndex: number) => {
+                  const displayNumber = displays.length + 1;
+                  displays.push({
+                    id: displayNumber.toString(),
+                    name: display._name || `Display ${displayNumber}`,
+                    type: "screen",
+                  });
+                },
+              );
+            }
+          });
+        }
+
+        console.log(
+          `[screencapture] Found ${displays.length} displays:`,
+          displays,
+        );
+
+        if (displays.length === 0) {
+          // If no displays found, provide defaults
+          displays.push({ id: "1", name: "Main Display", type: "screen" });
+        }
+
+        resolve(displays);
+      } catch (error) {
+        console.error("[screencapture] Error parsing display data:", error);
+        // Fallback to default
+        resolve([{ id: "1", name: "Main Display", type: "screen" }]);
+      }
+    });
+
+    process.on("error", (error) => {
+      console.error("[screencapture] Error listing displays:", error);
+      reject(error);
+    });
+  });
+});
+
+// Helper: Attempt to start screencapture recording
+const attemptRecording = (
+  displayId: string,
+  outputPath: string,
+  withAudio: boolean,
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    console.log(
+      `[screencapture] Starting recording - Display: ${displayId}, Audio: ${withAudio}`,
+    );
+
+    // screencapture command for video recording
+    // Format: screencapture -v -g -x -D <displayId> output.mov
+    const args = [
+      "-v", // Video recording mode (continuous until killed)
+      "-x", // Do not play sounds (prevents interactive prompt blocking)
+    ];
+
+    // Add audio if requested (microphone only via default input)
+    if (withAudio) {
+      args.push("-g"); // -g captures audio using default input (microphone)
+    }
+
+    // Specify display
+    args.push("-D", displayId);
+
+    // Output file (screencapture creates .mov files)
+    args.push(outputPath);
+
+    console.log("[screencapture] Command:", "screencapture", args.join(" "));
+
+    screencaptureRecordingProcess = spawn("screencapture", args);
+
+    let started = false;
+    let errorOutput = "";
+
+    screencaptureRecordingProcess.stdout?.on("data", (data) => {
+      console.log("[screencapture stdout]", data.toString());
+    });
+
+    screencaptureRecordingProcess.stderr?.on("data", (data) => {
+      const output = data.toString();
+      errorOutput += output;
+      console.log("[screencapture stderr]", output);
+
+      // Check for permission errors
+      if (output.includes("denied") || output.includes("permission")) {
+        console.error("[screencapture] Permission denied!");
+      }
+
+      // Check for errors
+      if (output.includes("Error") || output.includes("failed")) {
+        console.error("[screencapture] Error detected in output");
+      }
+    });
+
+    screencaptureRecordingProcess.on("error", (error) => {
+      console.error("[screencapture] Process error:", error);
+      screencaptureRecordingProcess = null;
+      if (!started) {
+        reject(error);
+      }
+    });
+
+    screencaptureRecordingProcess.on("close", (code) => {
+      console.log(`[screencapture] Process exited with code ${code}`);
+
+      if (code !== 0 && code !== null) {
+        const errorMessage = `screencapture failed with exit code ${code}. ${errorOutput ? "Error: " + errorOutput : ""}`;
+        console.error(`[screencapture] ${errorMessage}`);
+
+        if (!started) {
+          console.error("[screencapture] Full error output:", errorOutput);
+        }
+      }
+
+      screencaptureRecordingProcess = null;
+
+      // If process exits before recording started, reject
+      if (!started && code !== 0) {
+        reject(new Error(errorOutput || "screencapture failed to start"));
+      }
+    });
+
+    // screencapture doesn't create the file until recording stops
+    // We validate by checking if the process is still running
+    setTimeout(() => {
+      // Check if the process is still running (not exited with error)
+      if (
+        screencaptureRecordingProcess &&
+        !screencaptureRecordingProcess.killed
+      ) {
+        started = true;
+        console.log(
+          `[screencapture] Recording process started successfully (PID: ${screencaptureRecordingProcess.pid})`,
+        );
+        console.log(`[screencapture] Recording to: ${outputPath}`);
+        resolve(outputPath); // Return the output path
+      } else {
+        reject(new Error("Recording process failed to start or exited early"));
+      }
+    }, 1000); // Check after 1 second
+  });
+};
+
+// Handler: Start screencapture recording
+ipcMain.handle(
+  "start-ffmpeg-recording",
+  async (event, displayId: string, filename: string) => {
+    if (screencaptureRecordingProcess) {
+      throw new Error("Recording already in progress");
+    }
+
+    // Generate output path in main process (has access to app.getPath)
+    const videosPath = app.getPath("videos") || app.getPath("documents");
+    const outputPath = path.join(videosPath, filename);
+
+    console.log(`[screencapture] Starting recording on display ${displayId}`);
+    console.log(`[screencapture] Videos path: ${videosPath}`);
+    console.log(`[screencapture] Filename: ${filename}`);
+    console.log(`[screencapture] Output path: ${outputPath}`);
+
+    // Start recording with microphone audio
+    try {
+      console.log(
+        "[screencapture] Starting recording with microphone audio...",
+      );
+      const recordingPath = await attemptRecording(displayId, outputPath, true);
+      console.log("[screencapture] Successfully started recording!");
+      return recordingPath; // Returns .mov path
+    } catch (error: any) {
+      console.error(
+        "[screencapture] Failed to start recording:",
+        error.message,
+      );
+      throw error;
+    }
+  },
+);
+
+// Handler: Stop screencapture recording
+ipcMain.handle("stop-ffmpeg-recording", async () => {
+  return new Promise((resolve) => {
+    if (!screencaptureRecordingProcess) {
+      resolve(false);
+      return;
+    }
+
+    console.log("[screencapture] Stopping recording...");
+
+    // Send SIGINT (Ctrl+C) to screencapture to gracefully stop
+    screencaptureRecordingProcess.kill("SIGINT");
+
+    // Wait for process to exit
+    screencaptureRecordingProcess.on("close", () => {
+      console.log("[screencapture] Recording stopped successfully");
+      screencaptureRecordingProcess = null;
+      resolve(true);
+    });
+
+    // Force kill if it doesn't stop within 3 seconds
+    setTimeout(() => {
+      if (screencaptureRecordingProcess) {
+        console.warn("[screencapture] Force killing process");
+        screencaptureRecordingProcess.kill("SIGKILL");
+        screencaptureRecordingProcess = null;
+        resolve(true);
+      }
+    }, 3000);
+  });
+});
+
+// Handler: Convert MOV to MP4 using FFmpeg
+ipcMain.handle("convert-mov-to-mp4", async (event, movPath: string) => {
+  return new Promise((resolve, reject) => {
+    if (!ffmpegPath) {
+      reject(new Error("FFmpeg not available for conversion"));
+      return;
+    }
+
+    // Generate MP4 output path
+    const mp4Path = movPath.replace(/\.mov$/, ".mp4");
+
+    console.log(`[FFmpeg Convert] Converting MOV to MP4...`);
+    console.log(`[FFmpeg Convert] Input: ${movPath}`);
+    console.log(`[FFmpeg Convert] Output: ${mp4Path}`);
+
+    // FFmpeg conversion command
+    // -c:v copy = copy video stream without re-encoding (fast)
+    // -c:a copy = copy audio stream without re-encoding (fast)
+    // -movflags faststart = optimize for web playback (moov atom at start)
+    const args = [
+      "-i",
+      movPath,
+      "-c:v",
+      "copy",
+      "-c:a",
+      "copy",
+      "-movflags",
+      "faststart", // Optimize for web streaming
+      "-y", // Overwrite output file
+      mp4Path,
+    ];
+
+    console.log("[FFmpeg Convert] Command:", ffmpegPath, args.join(" "));
+
+    const conversionProcess = spawn(ffmpegPath, args);
+
+    let errorOutput = "";
+
+    conversionProcess.stdout?.on("data", (data) => {
+      console.log("[FFmpeg Convert stdout]", data.toString());
+    });
+
+    conversionProcess.stderr?.on("data", (data) => {
+      const output = data.toString();
+      errorOutput += output;
+      // FFmpeg outputs progress to stderr, which is normal
+      if (output.includes("Error") || output.includes("failed")) {
+        console.error("[FFmpeg Convert stderr]", output);
+      }
+    });
+
+    conversionProcess.on("error", (error) => {
+      console.error("[FFmpeg Convert] Process error:", error);
+      reject(error);
+    });
+
+    conversionProcess.on("close", (code) => {
+      if (code === 0) {
+        console.log("[FFmpeg Convert] Conversion successful!");
+
+        // Verify the output file exists
+        if (fs.existsSync(mp4Path)) {
+          const stats = fs.statSync(mp4Path);
+          console.log(`[FFmpeg Convert] Output file size: ${stats.size} bytes`);
+
+          // Delete the original MOV file to save space
+          try {
+            fs.unlinkSync(movPath);
+            console.log(
+              `[FFmpeg Convert] Deleted temporary MOV file: ${movPath}`,
+            );
+          } catch (deleteError) {
+            console.warn(
+              `[FFmpeg Convert] Failed to delete MOV file:`,
+              deleteError,
+            );
+          }
+
+          resolve(mp4Path);
+        } else {
+          reject(new Error("Conversion completed but output file not found"));
+        }
+      } else {
+        const errorMessage = `FFmpeg conversion failed with exit code ${code}. ${errorOutput}`;
+        console.error(`[FFmpeg Convert] ${errorMessage}`);
+        reject(new Error(errorMessage));
+      }
+    });
+  });
+});
+
+// Handler: Open system settings for screen recording permissions
+ipcMain.handle("open-system-settings", async () => {
+  try {
+    // Open macOS System Settings to Screen Recording permissions
+    await shell.openExternal(
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    );
+  } catch (error) {
+    console.error("Error opening system settings:", error);
+    throw error;
+  }
+});
+
+// Handler: Generate video thumbnail
+ipcMain.handle("generate-thumbnail", async (event, videoPath: string) => {
+  return new Promise((resolve, reject) => {
+    // Create thumbnails directory if it doesn't exist
+    const thumbsDir = path.join(app.getPath("temp"), "clipforge-thumbs");
+    if (!fs.existsSync(thumbsDir)) {
+      fs.mkdirSync(thumbsDir, { recursive: true });
+    }
+
+    const thumbnailPath = path.join(thumbsDir, `thumb_${Date.now()}.png`);
+
+    ffmpeg(videoPath)
+      .seekInput(1) // Seek to 1 second
+      .frames(1) // Extract 1 frame
+      .size("320x?") // Width 320, maintain aspect ratio
+      .output(thumbnailPath)
+      .on("end", () => {
+        console.log("Thumbnail generated:", thumbnailPath);
+        resolve(thumbnailPath);
+      })
+      .on("error", (err) => {
+        console.error("Thumbnail generation error:", err);
+        reject(err);
+      })
+      .run();
+  });
+});
+
+// Handler: Get file size
+ipcMain.handle("get-file-size", async (event, filePath: string) => {
+  try {
+    const stats = await fs.promises.stat(filePath);
+    return stats.size;
+  } catch (error) {
+    console.error("Error getting file size:", error);
+    throw error;
+  }
+});
+
+// Handler: Save media library
+ipcMain.handle("save-media-library", async (event, items: any[]) => {
+  try {
+    const userDataPath = app.getPath("userData");
+    const libraryPath = path.join(userDataPath, "media-library.json");
+
+    await fs.promises.writeFile(
+      libraryPath,
+      JSON.stringify(items, null, 2),
+      "utf-8",
+    );
+
+    console.log("Media library saved:", libraryPath);
+    return true;
+  } catch (error) {
+    console.error("Error saving media library:", error);
+    throw error;
+  }
+});
+
+// Handler: Load media library
+ipcMain.handle("load-media-library", async () => {
+  try {
+    const userDataPath = app.getPath("userData");
+    const libraryPath = path.join(userDataPath, "media-library.json");
+
+    // Check if file exists
+    if (!fs.existsSync(libraryPath)) {
+      console.log("No saved media library found");
+      return [];
+    }
+
+    const data = await fs.promises.readFile(libraryPath, "utf-8");
+    const items = JSON.parse(data);
+
+    // Validate that files still exist
+    const validItems = [];
+    for (const item of items) {
+      if (fs.existsSync(item.filePath)) {
+        validItems.push(item);
+      } else {
+        console.log("File no longer exists, skipping:", item.filePath);
+      }
+    }
+
+    console.log(
+      `Loaded ${validItems.length} items from media library (${items.length - validItems.length} skipped)`,
+    );
+
+    // Clean up the saved library if any files were skipped
+    if (validItems.length < items.length) {
+      await fs.promises.writeFile(
+        libraryPath,
+        JSON.stringify(validItems, null, 2),
+        "utf-8",
+      );
+      console.log("Cleaned up media library, removed stale entries");
+    }
+
+    return validItems;
+  } catch (error) {
+    console.error("Error loading media library:", error);
+    return [];
+  }
+});
+
+// Delete a file from disk
+ipcMain.handle("delete-file", async (event, filePath: string) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) {
+      console.log("File does not exist:", filePath);
+      return false;
+    }
+
+    await fs.promises.unlink(filePath);
+    console.log("File deleted successfully:", filePath);
+    return true;
+  } catch (error) {
+    console.error("Error deleting file:", error);
+    return false;
+  }
+});

@@ -97,8 +97,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           ? videoPath
           : `file://${videoPath}`;
 
-        console.log('Loading video from:', videoUrl);
+        console.log('[VideoPlayer] Loading video from:', videoUrl);
+
+        // Only update src if it's different to avoid resetting the video
+        if (videoRef.current.src === videoUrl) {
+          console.log('[VideoPlayer] Src unchanged, skipping reload');
+          return;
+        }
+
         videoRef.current.src = videoUrl;
+        videoRef.current.load(); // Explicitly load the new source
 
         // Add error handler
         videoRef.current.onerror = (e) => {

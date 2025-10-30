@@ -17,3 +17,24 @@ body {
   width: 100vw;
   height: 100vh;
 }
+
+/* Media Thumbnail hover styles */
+.media-thumbnail:hover {
+  border-color: #3b82f6;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.media-thumbnail:hover .media-thumbnail-remove {
+  opacity: 1;
+}
+
+.media-thumbnail-remove:hover {
+  background-color: #ff4444 !important;
+  transform: scale(1.1);
+}
+
+/* Media Library drag-over state */
+.media-library-drag-over {
+  border-color: #3b82f6 !important;
+  background-color: rgba(59, 130, 246, 0.1) !important;
+}
