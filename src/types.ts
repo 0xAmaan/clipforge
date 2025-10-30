@@ -91,12 +91,14 @@ export interface MultiClipTimelineProps {
     newSourceEnd: number,
   ) => void;
   onSeek: (time: number) => void;
+  onScrub?: (time: number) => void; // Called during hover scrubbing for preview
 }
 
 export interface ClipItemProps {
   clip: Clip;
   isSelected: boolean;
   pixelsPerSecond: number;
+  xOffset?: number; // Horizontal offset for padding
   onSelect: () => void;
   onMove: (newTimelineStart: number) => void;
   onTrim: (newSourceStart: number, newSourceEnd: number) => void;
@@ -136,6 +138,7 @@ export interface MediaLibraryProps {
   onAddToTimeline: (item: MediaItem) => void;
   onRemove: (id: string) => void;
   onDrop?: (filePath: string) => void;
+  onImport?: () => void;
 }
 
 export interface MediaThumbnailProps {

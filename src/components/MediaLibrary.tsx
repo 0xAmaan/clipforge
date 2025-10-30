@@ -1,6 +1,9 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { Upload, FolderOpen, Video } from 'lucide-react';
 import { MediaLibraryProps } from '../types';
 import { MediaThumbnail } from './MediaThumbnail';
+import { cn } from '../lib/utils';
+import { formatTime } from '../utils/timeFormat';
 
 /**
  * MediaLibrary component
@@ -10,8 +13,44 @@ export const MediaLibrary = ({
   items,
   onAddToTimeline,
   onRemove,
-}: MediaLibraryProps) => {
+  onDrop,
+  onImport,
+  isRecording,
+  isPicking,
+  isSaving,
+  elapsedTime,
+  onStartPicking,
+  onStopRecording,
+  recordingError,
+  onOpenSettings,
+}: MediaLibraryProps & {
+  isRecording?: boolean;
+  isPicking?: boolean;
+  isSaving?: boolean;
+  elapsedTime?: number;
+  onStartPicking?: () => void;
+  onStopRecording?: () => void;
+  recordingError?: string | null;
+  onOpenSettings?: () => void;
+}) => {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [showRecordingPopup, setShowRecordingPopup] = useState(false);
+  const recordingPopupRef = useRef<HTMLDivElement>(null);
+
+  // Close popup when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (recordingPopupRef.current && !recordingPopupRef.current.contains(event.target as Node)) {
+        // Don't auto-close recording popup if recording is in progress
+        if (!isRecording && !isSaving) {
+          setShowRecordingPopup(false);
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isRecording, isSaving]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -44,60 +83,156 @@ export const MediaLibrary = ({
       return;
     }
 
-    // Pass file paths to parent component for processing
-    // We need to get the file path from the File object
+    // Process each video file
     for (const file of videoFiles) {
-      // In Electron, we can access the path property
-      const filePath = (file as any).path;
-      if (filePath) {
-        // Call the onDrop handler passed from parent
+      try {
+        // Use Electron's webUtils to get the real file path
+        const filePath = window.electronAPI.getPathForFile(file);
+        console.log('✓ Dropped file:', file.name, 'Path:', filePath);
+
         if (onDrop) {
-          onDrop(filePath);
+          await onDrop(filePath);
         }
+      } catch (error) {
+        console.error('Failed to process dropped file:', file.name, error);
       }
     }
   };
 
   return (
-    <div style={styles.container}>
+    <div className="flex flex-col h-full bg-background overflow-hidden relative">
       {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.headerTitle}>Media Library</div>
-        <div style={styles.headerCount}>{items.length} items</div>
+      <div className="flex items-center justify-center px-4 py-3 border-b border-border bg-panel relative">
+        <div className="flex items-center gap-2">
+          <FolderOpen className="w-4 h-4 text-accent" />
+          <h2 className="text-sm font-bold tracking-wide">Media Library ({items.length})</h2>
+        </div>
+        <div className="absolute right-4 flex items-center gap-2">
+          {/* Screen Recording Button */}
+          {onStartPicking && onStopRecording && (
+            <div className="relative" ref={recordingPopupRef}>
+              <button
+                onClick={() => setShowRecordingPopup(!showRecordingPopup)}
+                disabled={isPicking || isSaving}
+                className={cn(
+                  "p-2 rounded transition-colors cursor-pointer",
+                  isRecording ? "bg-red-500 hover:bg-red-600" : "bg-accent hover:bg-blue-600",
+                  (isPicking || isSaving) && "opacity-50 cursor-not-allowed"
+                )}
+                title={isRecording ? "Stop Recording" : "Start Recording"}
+              >
+                <Video className="w-4 h-4 text-white" />
+              </button>
+
+              {showRecordingPopup && (
+                <div className="absolute right-0 top-12 w-80 bg-panel border border-border rounded-lg shadow-xl z-50 p-4">
+                  <h3 className="text-sm font-semibold mb-3">Screen Recording</h3>
+
+                  {recordingError && (
+                    <div className="mb-3 p-3 bg-red-500/10 border border-red-500 rounded text-sm text-red-500">
+                      <div className="whitespace-pre-wrap break-words font-mono text-xs">
+                        {recordingError}
+                      </div>
+                      {recordingError.includes("permission") && onOpenSettings && (
+                        <button
+                          onClick={onOpenSettings}
+                          className="mt-2 px-3 py-1.5 bg-accent hover:bg-blue-600 rounded text-white text-xs font-semibold transition-colors cursor-pointer"
+                        >
+                          Open System Settings
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {!isRecording && !isSaving ? (
+                    <div className="space-y-3">
+                      <button
+                        onClick={() => {
+                          onStartPicking();
+                        }}
+                        disabled={isPicking}
+                        className={cn(
+                          "w-full px-4 py-2 bg-accent hover:bg-blue-600 rounded text-white font-semibold transition-colors cursor-pointer",
+                          isPicking && "opacity-50 cursor-not-allowed"
+                        )}
+                      >
+                        {isPicking ? "Starting..." : "Start Recording"}
+                      </button>
+                      <p className="text-xs text-gray-400 italic">
+                        Click to select a screen or window to capture
+                      </p>
+                    </div>
+                  ) : isSaving ? (
+                    <div className="flex items-center gap-2 text-sm text-accent">
+                      <div className="w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                      Processing and importing video...
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-2xl font-bold font-mono">{formatTime(elapsedTime || 0)}</span>
+                        <button
+                          onClick={() => {
+                            onStopRecording();
+                            setShowRecordingPopup(false);
+                          }}
+                          className="px-4 py-2 bg-red-500 hover:bg-red-600 rounded text-white font-semibold transition-colors cursor-pointer"
+                        >
+                          Stop Recording
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Import Video Button */}
+          {onImport && (
+            <button
+              onClick={onImport}
+              className="p-2 bg-accent hover:bg-blue-600 rounded transition-colors cursor-pointer"
+              title="Import Video"
+            >
+              <Upload className="w-4 h-4 text-white" />
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Drag-drop zone */}
+      {/* Full-panel drag overlay */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 bg-accent/20 border-4 border-accent border-dashed flex items-center justify-center pointer-events-none">
+          <div className="bg-panel/95 rounded-lg p-6 flex flex-col items-center gap-3">
+            <Upload className="w-12 h-12 text-accent" />
+            <div className="text-lg font-bold text-accent">Drop files here</div>
+            <div className="text-sm text-gray-300">
+              Supports MP4, MOV, AVI, WebM, MKV
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Media items list */}
       <div
-        className={isDragOver ? 'media-library-drag-over' : ''}
-        style={{
-          ...styles.dropZone,
-          ...(isDragOver ? styles.dropZoneActive : {}),
-        }}
+        className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-3"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div style={styles.dropZoneIcon}>📁</div>
-        <div style={styles.dropZoneText}>
-          {isDragOver ? 'Drop files here' : 'Drag & drop videos here'}
-        </div>
-        <div style={styles.dropZoneSubtext}>
-          or use the Import button above
-        </div>
-      </div>
-
-      {/* Media items list */}
-      <div style={styles.itemsContainer}>
         {items.length === 0 ? (
-          <div style={styles.emptyState}>
-            <div style={styles.emptyStateIcon}>🎬</div>
-            <div style={styles.emptyStateText}>No media imported yet</div>
-            <div style={styles.emptyStateSubtext}>
-              Import videos to get started
+          <div className="flex flex-col items-center justify-center gap-3 h-full text-center">
+            <FolderOpen className="w-12 h-12 text-gray-700 opacity-30" />
+            <div className="text-sm font-semibold text-gray-500">
+              No media imported yet
+            </div>
+            <div className="text-xs text-gray-600">
+              Click the + icon or drag files here
             </div>
           </div>
         ) : (
-          <div style={styles.itemsGrid}>
+          <div className="grid grid-cols-4 gap-3">
             {items.map((item) => (
               <MediaThumbnail
                 key={item.id}
@@ -111,104 +246,4 @@ export const MediaLibrary = ({
       </div>
     </div>
   );
-};
-
-// Styles
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    width: '300px',
-    height: '100%',
-    backgroundColor: '#0a0a0a',
-    borderRight: '1px solid #333',
-    overflow: 'hidden',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '16px',
-    borderBottom: '1px solid #333',
-    backgroundColor: '#1a1a1a',
-  },
-  headerTitle: {
-    fontSize: '16px',
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: '0.5px',
-  },
-  headerCount: {
-    fontSize: '12px',
-    fontWeight: '600',
-    color: '#888',
-    backgroundColor: '#2a2a2a',
-    padding: '4px 8px',
-    borderRadius: '4px',
-    fontFamily: 'monospace',
-  },
-  dropZone: {
-    margin: '16px',
-    padding: '24px',
-    border: '2px dashed #333',
-    borderRadius: '8px',
-    backgroundColor: '#1a1a1a',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '8px',
-    transition: 'all 0.2s',
-  },
-  dropZoneActive: {
-    borderColor: '#3b82f6',
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-  },
-  dropZoneIcon: {
-    fontSize: '32px',
-    opacity: 0.7,
-  },
-  dropZoneText: {
-    fontSize: '13px',
-    fontWeight: '600',
-    color: '#fff',
-    textAlign: 'center',
-  },
-  dropZoneSubtext: {
-    fontSize: '11px',
-    color: '#888',
-    textAlign: 'center',
-  },
-  itemsContainer: {
-    flex: 1,
-    overflowY: 'auto',
-    overflowX: 'hidden',
-    padding: '16px',
-  },
-  emptyState: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '12px',
-    padding: '48px 24px',
-    textAlign: 'center',
-  },
-  emptyStateIcon: {
-    fontSize: '48px',
-    opacity: 0.3,
-  },
-  emptyStateText: {
-    fontSize: '14px',
-    fontWeight: '600',
-    color: '#888',
-  },
-  emptyStateSubtext: {
-    fontSize: '12px',
-    color: '#666',
-  },
-  itemsGrid: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-  },
 };

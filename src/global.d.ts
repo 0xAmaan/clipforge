@@ -52,6 +52,9 @@ declare global {
       saveMediaLibrary: (items: MediaItem[]) => Promise<boolean>;
       loadMediaLibrary: () => Promise<MediaItem[]>;
       deleteFile: (filePath: string) => Promise<boolean>;
+
+      // File utilities
+      getPathForFile: (file: File) => string;
     };
   }
 }

@@ -1,3 +1,4 @@
+import { X, Clock } from 'lucide-react';
 import { MediaThumbnailProps } from '../types';
 import { formatTime } from '../utils/timeFormat';
 
@@ -26,132 +27,43 @@ export const MediaThumbnail = ({
 
   return (
     <div
-      className="media-thumbnail"
-      style={styles.container}
+      className="group flex flex-col bg-panel rounded border border-border cursor-pointer transition-all hover:border-accent hover:shadow-md hover:shadow-accent/20 overflow-hidden"
       onClick={onClick}
       draggable="true"
     >
       {/* Thumbnail Image */}
-      <div style={styles.thumbnailContainer}>
+      <div className="relative w-full aspect-video bg-background overflow-hidden">
         <img
           src={window.electronAPI.getFileUrl(item.thumbnail)}
           alt={item.fileName}
-          style={styles.thumbnail}
+          className="w-full h-full object-cover"
         />
-        <div style={styles.durationBadge}>{formatTime(item.duration)}</div>
+
+        {/* Duration Badge */}
+        <div className="absolute bottom-1 right-1 flex items-center gap-0.5 px-1.5 py-0.5 bg-black/80 rounded text-[10px] font-semibold font-mono text-white">
+          <Clock className="w-2.5 h-2.5" />
+          {formatTime(item.duration)}
+        </div>
+
+        {/* Remove Button */}
         <button
-          className="media-thumbnail-remove"
-          style={styles.removeButton}
+          className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center bg-black/80 hover:bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
           onClick={handleRemoveClick}
           title="Remove from library"
         >
-          ×
+          <X className="w-3 h-3 text-white" />
         </button>
       </div>
 
-      {/* Metadata */}
-      <div style={styles.metadata}>
-        <div style={styles.fileName} title={item.fileName}>
+      {/* Metadata - always show filename */}
+      <div className="px-1.5 py-1.5">
+        <div
+          className="text-[10px] font-medium text-gray-300 truncate"
+          title={item.fileName}
+        >
           {item.fileName}
-        </div>
-        <div style={styles.metadataRow}>
-          <span style={styles.metadataText}>{item.resolution}</span>
-          <span style={styles.metadataDivider}>•</span>
-          <span style={styles.metadataText}>{formatFileSize(item.fileSize)}</span>
         </div>
       </div>
     </div>
   );
 };
-
-// Styles
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-    backgroundColor: '#1a1a1a',
-    borderRadius: '6px',
-    border: '1px solid #333',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    overflow: 'hidden',
-  },
-  thumbnailContainer: {
-    position: 'relative',
-    width: '100%',
-    aspectRatio: '16/9',
-    backgroundColor: '#0a0a0a',
-    overflow: 'hidden',
-  },
-  thumbnail: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover',
-    display: 'block',
-  },
-  durationBadge: {
-    position: 'absolute',
-    bottom: '6px',
-    right: '6px',
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    color: '#fff',
-    padding: '2px 6px',
-    borderRadius: '3px',
-    fontSize: '11px',
-    fontWeight: '600',
-    fontFamily: 'monospace',
-  },
-  removeButton: {
-    position: 'absolute',
-    top: '6px',
-    right: '6px',
-    width: '24px',
-    height: '24px',
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '50%',
-    cursor: 'pointer',
-    fontSize: '18px',
-    fontWeight: 'bold',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    opacity: 0,
-    transition: 'all 0.2s',
-    lineHeight: '1',
-    padding: '0',
-  },
-  metadata: {
-    padding: '8px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px',
-  },
-  fileName: {
-    fontSize: '13px',
-    fontWeight: '600',
-    color: '#fff',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  metadataRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    fontSize: '11px',
-    color: '#888',
-  },
-  metadataText: {
-    fontFamily: 'monospace',
-  },
-  metadataDivider: {
-    color: '#555',
-  },
-};
-
-// Add hover styles via CSS-in-JS workaround
-// Note: In a real application, you might use a CSS-in-JS library or CSS modules
-// For now, we'll handle hover states with inline styles

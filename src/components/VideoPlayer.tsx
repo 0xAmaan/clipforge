@@ -1,4 +1,5 @@
 import { useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { Play, Pause } from 'lucide-react';
 import { VideoPlayerProps } from '../types';
 import { formatTime } from '../utils/timeFormat';
 
@@ -73,16 +74,13 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     const handlePlayPause = async () => {
       if (videoRef.current) {
         if (videoRef.current.paused) {
-          console.log('Attempting to play video...');
           try {
             await videoRef.current.play();
-            console.log('Video playing successfully');
             onPlayPause(true);
           } catch (err) {
             console.error('Play failed:', err);
           }
         } else {
-          console.log('Pausing video...');
           videoRef.current.pause();
           onPlayPause(false);
         }
@@ -97,28 +95,26 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           ? videoPath
           : `file://${videoPath}`;
 
-        console.log('[VideoPlayer] Loading video from:', videoUrl);
-
         // Only update src if it's different to avoid resetting the video
         if (videoRef.current.src === videoUrl) {
-          console.log('[VideoPlayer] Src unchanged, skipping reload');
           return;
         }
 
         videoRef.current.src = videoUrl;
         videoRef.current.load(); // Explicitly load the new source
 
+        // Autoplay when video is loaded
+        videoRef.current.onloadeddata = () => {
+          videoRef.current?.play().catch(err => {
+            console.error('Autoplay failed:', err);
+          });
+        };
+
         // Add error handler
         videoRef.current.onerror = (e) => {
           console.error('Video load error:', e);
           console.error('Video error code:', videoRef.current?.error?.code);
           console.error('Video error message:', videoRef.current?.error?.message);
-        };
-
-        // Add loaded handler
-        videoRef.current.onloadedmetadata = () => {
-          console.log('Video loaded successfully');
-          console.log('Video duration:', videoRef.current?.duration);
         };
       }
     }, [videoPath]);
@@ -131,36 +127,39 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     }, [currentTime]);
 
     if (!videoPath) {
-      return (
-        <div style={styles.emptyState}>
-          <p style={styles.emptyStateText}>No video loaded</p>
-          <p style={styles.emptyStateSubtext}>
-            Click "Import Video" to get started
-          </p>
-        </div>
-      );
+      return null; // Let the parent handle the empty state
     }
 
+    const isPaused = videoRef.current?.paused !== false;
+
     return (
-      <div style={styles.container}>
+      <div className="relative w-full max-w-full">
         <video
           ref={videoRef}
-          style={styles.video}
+          className="w-full h-auto max-h-[50vh] bg-black rounded cursor-pointer"
           onTimeUpdate={handleTimeUpdate}
           onPlay={() => onPlayPause(true)}
           onPause={() => onPlayPause(false)}
+          onClick={handlePlayPause}
         />
 
-        <div style={styles.controls}>
-          <button onClick={handlePlayPause} style={styles.playPauseButton}>
-            {videoRef.current?.paused !== false ? '▶ Play' : '⏸ Pause'}
-          </button>
-
-          <div style={styles.timeDisplay}>
-            <span style={styles.currentTime}>{formatTime(currentTime)}</span>
-            <span style={styles.timeSeparator}>/</span>
-            <span style={styles.duration}>{formatTime(trimEnd - trimStart)}</span>
+        {/* Play overlay - only show when paused */}
+        {isPaused && (
+          <div
+            className="absolute inset-0 flex items-center justify-center cursor-pointer"
+            onClick={handlePlayPause}
+          >
+            <div className="w-20 h-20 bg-black/60 hover:bg-black/80 rounded-full flex items-center justify-center transition-colors">
+              <Play className="w-10 h-10 text-white ml-1" />
+            </div>
           </div>
+        )}
+
+        {/* Time display overlay */}
+        <div className="absolute bottom-3 left-3 flex items-center gap-1 px-2 py-1 bg-black/80 rounded text-xs text-white font-mono">
+          <span className="font-bold">{formatTime(currentTime)}</span>
+          <span className="opacity-60">/</span>
+          <span className="opacity-80">{formatTime(trimEnd - trimStart)}</span>
         </div>
       </div>
     );
@@ -168,78 +167,3 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 );
 
 VideoPlayer.displayName = 'VideoPlayer';
-
-// Styles
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-    backgroundColor: '#000',
-    borderRadius: '8px',
-    padding: '16px',
-  },
-  video: {
-    width: '100%',
-    height: 'auto',
-    maxHeight: '400px',
-    backgroundColor: '#000',
-    borderRadius: '4px',
-  },
-  controls: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '16px',
-    padding: '8px',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: '4px',
-  },
-  playPauseButton: {
-    padding: '8px 16px',
-    backgroundColor: '#3b82f6',
-    color: 'white',
-    border: 'none',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '14px',
-    fontWeight: '500',
-    transition: 'background-color 0.2s',
-  },
-  timeDisplay: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    fontSize: '14px',
-    color: 'white',
-    fontFamily: 'monospace',
-  },
-  currentTime: {
-    fontWeight: 'bold',
-  },
-  timeSeparator: {
-    opacity: 0.6,
-  },
-  duration: {
-    opacity: 0.8,
-  },
-  emptyState: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: '400px',
-    backgroundColor: '#1a1a1a',
-    borderRadius: '8px',
-    padding: '32px',
-  },
-  emptyStateText: {
-    fontSize: '20px',
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: '8px',
-  },
-  emptyStateSubtext: {
-    fontSize: '14px',
-    color: '#888',
-  },
-};

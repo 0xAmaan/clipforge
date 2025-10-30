@@ -1,7 +1,7 @@
 // See the Electron documentation for details on how to use preload scripts:
 // https://www.electronjs.org/docs/latest/tutorial/process-model#preload-scripts
 
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
@@ -75,4 +75,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("save-media-library", items),
   loadMediaLibrary: () => ipcRenderer.invoke("load-media-library"),
   deleteFile: (filePath: string) => ipcRenderer.invoke("delete-file", filePath),
+
+  // Get file path from File object (for drag-and-drop)
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
 });

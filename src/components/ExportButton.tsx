@@ -69,12 +69,6 @@ const ExportButton = ({ clips, onExportComplete }: MultiClipExportProps) => {
       setIsExporting(true);
       setExportMessage('Preparing export...');
 
-      console.log('Starting multi-clip export:', {
-        clips: clips.length,
-        mode: exportMode,
-        resolution: resolution,
-      });
-
       // Export multiple clips using FFmpeg
       const result = await window.electronAPI.exportMultiClip(
         exportCommand.clips,

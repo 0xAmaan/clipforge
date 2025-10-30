@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Controls } from "./components/Controls";
-import ExportButton from "./components/ExportButton";
 import { MediaLibrary } from "./components/MediaLibrary";
-import RecordingControls from "./components/RecordingControls";
 import { Timeline } from "./components/Timeline";
 import { VideoPlayer, VideoPlayerHandle } from "./components/VideoPlayer";
+import VideoInfoPanel from "./components/VideoInfoPanel";
+import { Film } from "lucide-react";
 import "./index.css";
 import {
+  Clip,
   MediaItem,
   ProjectState,
   RecordingState,
@@ -32,7 +32,6 @@ const App = () => {
     isPlaying: false,
   });
 
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Media library state
@@ -55,34 +54,38 @@ const App = () => {
   const elapsedTimeRef = useRef<number>(0);
   const recordingOutputPathRef = useRef<string | null>(null);
 
+  // Track if initial load is complete
+  const [isLibraryLoaded, setIsLibraryLoaded] = useState(false);
+
   // Load persisted media library on mount
   useEffect(() => {
     const loadLibrary = async () => {
       try {
         const items = await window.electronAPI.loadMediaLibrary();
         setMediaLibrary(items);
-        console.log("Loaded media library:", items.length, "items");
+        setIsLibraryLoaded(true);
       } catch (err) {
         console.error("Failed to load media library:", err);
+        setIsLibraryLoaded(true);
       }
     };
     loadLibrary();
   }, []);
 
-  // Save media library whenever it changes
+  // Save media library whenever it changes (but not on initial load)
   useEffect(() => {
-    if (mediaLibrary.length > 0) {
-      const saveLibrary = async () => {
-        try {
-          await window.electronAPI.saveMediaLibrary(mediaLibrary);
-          console.log("Media library saved");
-        } catch (err) {
-          console.error("Failed to save media library:", err);
-        }
-      };
-      saveLibrary();
-    }
-  }, [mediaLibrary]);
+    if (!isLibraryLoaded) return; // Don't save until initial load is complete
+
+    const saveLibrary = async () => {
+      try {
+        await window.electronAPI.saveMediaLibrary(mediaLibrary);
+        console.log('Media library saved:', mediaLibrary.length, 'items');
+      } catch (err) {
+        console.error("Failed to save media library:", err);
+      }
+    };
+    saveLibrary();
+  }, [mediaLibrary, isLibraryLoaded]);
 
   // Update elapsed time during recording
   useEffect(() => {
@@ -163,19 +166,12 @@ const App = () => {
       totalDuration: newTotalDuration,
       selectedClipId: newClip.id, // Auto-select newly imported clip
     });
-
-    console.log("Video imported successfully:", {
-      filePath,
-      metadata: videoMetadata,
-      clipId: newClip.id,
-    });
   };
 
   /**
    * Handle file drop - processes dropped video files
    */
   const handleFileDrop = async (filePath: string) => {
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -183,8 +179,6 @@ const App = () => {
     } catch (err) {
       console.error("Failed to import dropped video:", err);
       setError(err instanceof Error ? err.message : "Failed to import video");
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -193,7 +187,6 @@ const App = () => {
    * Opens file picker and loads video metadata
    */
   const handleImport = async () => {
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -201,7 +194,6 @@ const App = () => {
       const filePath = await window.electronAPI.openFile();
 
       if (!filePath) {
-        setIsLoading(false);
         return; // User cancelled
       }
 
@@ -209,19 +201,53 @@ const App = () => {
     } catch (err) {
       console.error("Failed to import video:", err);
       setError(err instanceof Error ? err.message : "Failed to import video");
-    } finally {
-      setIsLoading(false);
     }
   };
 
   /**
    * Handle video time updates (from video playback)
+   * Note: time parameter is the source video time, need to convert to timeline time
    */
-  const handleTimeUpdate = (time: number) => {
-    setProjectState((prev) => ({
-      ...prev,
-      currentTime: time,
-    }));
+  const handleTimeUpdate = (sourceTime: number) => {
+    const currentClip = getClipAtTime(projectState.clips, projectState.currentTime);
+
+    if (!currentClip) return;
+
+    // Convert source time to timeline time
+    const offsetIntoClip = sourceTime - currentClip.sourceStart;
+    const timelineTime = currentClip.timelineStart + offsetIntoClip;
+
+    // Check if we've reached the end of the current clip
+    if (sourceTime >= currentClip.sourceEnd) {
+      // Find the next clip on the timeline
+      const nextClip = projectState.clips.find(
+        clip => clip.timelineStart === currentClip.timelineStart + currentClip.duration
+      );
+
+      if (nextClip) {
+        // Transition to the next clip
+        setProjectState((prev) => ({
+          ...prev,
+          currentTime: nextClip.timelineStart,
+        }));
+      } else {
+        // No more clips, stop playback at the end
+        setProjectState((prev) => ({
+          ...prev,
+          currentTime: projectState.totalDuration,
+          isPlaying: false,
+        }));
+        if (videoPlayerRef.current) {
+          videoPlayerRef.current.pause();
+        }
+      }
+    } else {
+      // Normal time update within the clip
+      setProjectState((prev) => ({
+        ...prev,
+        currentTime: timelineTime,
+      }));
+    }
   };
 
   /**
@@ -236,16 +262,36 @@ const App = () => {
 
   /**
    * Handle seeking from timeline
+   * Note: time parameter is timeline time, need to convert to source time for the clip
    */
-  const handleSeek = (time: number) => {
+  const handleSeek = (timelineTime: number) => {
     setProjectState((prev) => ({
       ...prev,
-      currentTime: time,
+      currentTime: timelineTime,
     }));
 
     // Seek the video player if it exists
     if (videoPlayerRef.current) {
-      videoPlayerRef.current.seek(time);
+      const clipAtTime = getClipAtTime(projectState.clips, timelineTime);
+      if (clipAtTime) {
+        const sourceTime = getSourceTimeForClip(clipAtTime, timelineTime);
+        videoPlayerRef.current.seek(sourceTime);
+      }
+    }
+  };
+
+  /**
+   * Handle scrubbing over timeline (for preview without actually seeking)
+   * Note: time parameter is timeline time, need to convert to source time for the clip
+   */
+  const handleScrub = (timelineTime: number) => {
+    // Only seek the video player for preview when paused, don't update currentTime state
+    if (!projectState.isPlaying && videoPlayerRef.current) {
+      const clipAtTime = getClipAtTime(projectState.clips, timelineTime);
+      if (clipAtTime) {
+        const sourceTime = getSourceTimeForClip(clipAtTime, timelineTime);
+        videoPlayerRef.current.seek(sourceTime);
+      }
     }
   };
 
@@ -338,8 +384,6 @@ const App = () => {
         totalDuration: newTotalDuration,
         selectedClipId: newClip.id,
       });
-
-      console.log("Added from library to timeline:", item.fileName);
     } catch (err) {
       console.error("Failed to add to timeline:", err);
       setError(
@@ -350,7 +394,7 @@ const App = () => {
 
   /**
    * Handle removing an item from the media library
-   * Deletes the actual file from disk and removes from library
+   * Removes the reference from the library but keeps the original file on disk
    */
   const handleRemoveFromLibrary = async (id: string) => {
     const item = mediaLibrary.find((item) => item.id === id);
@@ -359,47 +403,29 @@ const App = () => {
       return;
     }
 
-    // Confirm deletion with user
-    const confirmed = confirm(
-      `Are you sure you want to delete "${item.fileName}"?\n\nThis will permanently delete the file from your computer.`,
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
     try {
-      // Delete the actual file from disk
-      const deleted = await window.electronAPI.deleteFile(item.filePath);
+      // Remove from library (keep the actual file on disk)
+      setMediaLibrary((prev) => prev.filter((item) => item.id !== id));
 
-      if (deleted) {
-        // Remove from library
-        setMediaLibrary((prev) => prev.filter((item) => item.id !== id));
+      // Also remove any clips using this file from the timeline
+      const updatedClips = projectState.clips.filter(
+        (clip) => clip.sourceFilePath !== item.filePath,
+      );
+      const newTotalDuration = calculateTotalDuration(updatedClips);
 
-        // Also remove any clips using this file from the timeline
-        const updatedClips = projectState.clips.filter(
-          (clip) => clip.sourceFilePath !== item.filePath,
-        );
-        const newTotalDuration = calculateTotalDuration(updatedClips);
-
-        setProjectState((prev) => ({
-          ...prev,
-          clips: updatedClips,
-          totalDuration: newTotalDuration,
-          selectedClipId:
-            prev.selectedClipId &&
-            updatedClips.some((c) => c.id === prev.selectedClipId)
-              ? prev.selectedClipId
-              : null,
-        }));
-
-        console.log("File deleted successfully:", item.fileName);
-      } else {
-        setError("Failed to delete file from disk");
-      }
+      setProjectState((prev) => ({
+        ...prev,
+        clips: updatedClips,
+        totalDuration: newTotalDuration,
+        selectedClipId:
+          prev.selectedClipId &&
+          updatedClips.some((c) => c.id === prev.selectedClipId)
+            ? prev.selectedClipId
+            : null,
+      }));
     } catch (err) {
-      console.error("Failed to delete file:", err);
-      setError(err instanceof Error ? err.message : "Failed to delete file");
+      console.error("Failed to remove from library:", err);
+      setError(err instanceof Error ? err.message : "Failed to remove from library");
     }
   };
 
@@ -426,8 +452,6 @@ const App = () => {
     setRecordingError(null);
 
     try {
-      console.log("[screencapture] Getting available displays...");
-
       // Get available displays
       const displays = await window.electronAPI.getAVFoundationDisplays();
 
@@ -437,9 +461,6 @@ const App = () => {
 
       // Use the first display (main screen) - TODO: let user select
       const displayId = displays[0].id;
-      console.log(
-        `[screencapture] Using display: ${displays[0].name} (ID: ${displayId})`,
-      );
 
       // Generate output filename with timestamp
       const timestamp = new Date()
@@ -448,16 +469,12 @@ const App = () => {
         .replace(/\..+/, "");
       const filename = `recording_${timestamp}.mov`;
 
-      console.log("[screencapture] Starting screencapture recording...");
-
       // Start screencapture recording - returns .mov path
       const outputPath = await window.electronAPI.startFFmpegRecording(
         displayId,
         filename,
       );
       recordingOutputPathRef.current = outputPath;
-
-      console.log("[screencapture] Recording started successfully");
 
       setRecordingState((prev) => ({
         ...prev,
@@ -503,8 +520,6 @@ You can click "Open Settings" below to go directly to the settings page.`;
    */
   const handleStopRecording = async () => {
     try {
-      console.log("[screencapture] Stopping recording...");
-
       // Set to "saving" state
       setRecordingState((prev) => ({
         ...prev,
@@ -514,8 +529,6 @@ You can click "Open Settings" below to go directly to the settings page.`;
 
       // Stop screencapture recording
       await window.electronAPI.stopFFmpegRecording();
-
-      console.log("[screencapture] Recording stopped, importing...");
 
       // Import the recorded MP4 file
       await handleRecordingStopped();
@@ -548,12 +561,8 @@ You can click "Open Settings" below to go directly to the settings page.`;
         ? (Date.now() - recordingStartTimeRef.current) / 1000
         : elapsedTimeRef.current;
 
-      console.log("[screencapture] Final elapsed time:", finalElapsedTime);
-      console.log("[screencapture] MOV file path:", filePath);
-
       // Wait for screencapture to fully finalize the file
       // screencapture writes the file when it stops, but needs time to flush/finalize
-      console.log("[screencapture] Waiting for file to be ready...");
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
       // Verify the MOV file is accessible and has content
@@ -562,7 +571,6 @@ You can click "Open Settings" below to go directly to the settings page.`;
         if (fileSize === 0) {
           throw new Error("Video file is empty");
         }
-        console.log(`[screencapture] MOV file verified: ${fileSize} bytes`);
       } catch (err) {
         console.error("[screencapture] File verification failed:", err);
         throw new Error("Video file not ready or is empty");
@@ -572,13 +580,9 @@ You can click "Open Settings" below to go directly to the settings page.`;
       // Fetch video metadata
       const videoMetadata = await window.electronAPI.getVideoMetadata(filePath);
 
-      console.log("[screencapture] Video metadata:", videoMetadata);
-
       // Use metadata duration or fallback to elapsed time
       const actualDuration =
         videoMetadata.duration > 0 ? videoMetadata.duration : finalElapsedTime;
-
-      console.log("[screencapture] Using duration:", actualDuration);
 
       // Update metadata with correct duration (if needed)
       const correctedMetadata: VideoMetadata = {
@@ -618,10 +622,6 @@ You can click "Open Settings" below to go directly to the settings page.`;
       const updatedClips = addClip(projectState.clips, newClip);
       const newTotalDuration = calculateTotalDuration(updatedClips);
 
-      console.log("[FFmpeg Recording] New clip:", newClip);
-      console.log("[FFmpeg Recording] Updated clips:", updatedClips);
-      console.log("[FFmpeg Recording] New total duration:", newTotalDuration);
-
       // Update project state - ensure totalDuration is always a number
       setProjectState({
         ...projectState,
@@ -645,8 +645,6 @@ You can click "Open Settings" below to go directly to the settings page.`;
       recordingStartTimeRef.current = null;
       elapsedTimeRef.current = 0;
       recordingOutputPathRef.current = null;
-
-      console.log("[FFmpeg Recording] Import completed successfully");
     } catch (err) {
       console.error("Failed to save recording:", err);
       setRecordingError(
@@ -655,316 +653,119 @@ You can click "Open Settings" below to go directly to the settings page.`;
     }
   };
 
+  const selectedClip = projectState.selectedClipId
+    ? projectState.clips.find((c) => c.id === projectState.selectedClipId) || null
+    : null;
+
+  // Get the current clip being played at the current timeline time
+  const currentClip = getClipAtTime(projectState.clips, projectState.currentTime);
+
+  // Calculate the source video time within the current clip
+  const getSourceTimeForClip = (clip: Clip | null, timelineTime: number): number => {
+    if (!clip) return 0;
+    // Convert timeline time to source video time
+    const offsetIntoClip = timelineTime - clip.timelineStart;
+    return clip.sourceStart + offsetIntoClip;
+  };
+
   return (
-    <div style={styles.container}>
-      {/* Header */}
-      <header style={styles.header}>
-        <h1 style={styles.title}>🎬 ClipForge</h1>
-        <p style={styles.subtitle}>Video Editor</p>
-      </header>
-
-      {/* Main Layout: Sidebar + Content */}
-      <div style={styles.mainLayout}>
-        {/* Left Sidebar - Media Library */}
-        <MediaLibrary
-          items={mediaLibrary}
-          onAddToTimeline={handleAddToTimeline}
-          onRemove={handleRemoveFromLibrary}
-          onDrop={handleFileDrop}
-        />
-
-        {/* Main Content */}
-        <main style={styles.main}>
-          {/* Controls Section */}
-          <Controls
-            onImport={handleImport}
-            videoPath={
-              projectState.clips.length > 0
-                ? projectState.clips[0].sourceFilePath
-                : null
-            }
-            metadata={
-              projectState.clips.length > 0
-                ? projectState.clips[0].sourceMetadata
-                : null
-            }
-            isLoading={isLoading}
-          />
-
-          {/* Recording Controls */}
-          <RecordingControls
-            isRecording={recordingState.isRecording}
-            isPicking={recordingState.isPicking}
-            isSaving={recordingState.isSaving}
-            elapsedTime={recordingState.elapsedTime}
-            onStartPicking={handleStartPicking}
-            onStopRecording={handleStopRecording}
-            error={recordingError}
-            onOpenSettings={handleOpenSettings}
-          />
-
-          {/* Clip Info Display */}
-          {projectState.clips.length > 0 && (
-            <div style={styles.clipInfo}>
-              <div style={styles.clipInfoLabel}>
-                Clips on Timeline:{" "}
-                <span style={styles.clipInfoValue}>
-                  {projectState.clips.length}
-                </span>
-              </div>
-              {projectState.selectedClipId && (
-                <div style={styles.clipInfoLabel}>
-                  Selected Clip:{" "}
-                  <span style={styles.clipInfoValue}>
-                    {projectState.clips
-                      .find((c) => c.id === projectState.selectedClipId)
-                      ?.sourceFilePath.split("/")
-                      .pop() || "Unknown"}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Error Display */}
-          {error && (
-            <div style={styles.errorBox}>
-              <span style={styles.errorIcon}>⚠️</span>
-              <span style={styles.errorText}>{error}</span>
-            </div>
-          )}
-
-          {/* Video Player Section - plays current clip at playhead */}
-          {projectState.clips.length > 0 && (
-            <VideoPlayer
-              ref={videoPlayerRef}
-              videoPath={
-                getClipAtTime(projectState.clips, projectState.currentTime)
-                  ?.sourceFilePath || projectState.clips[0].sourceFilePath
-              }
-              currentTime={projectState.currentTime}
-              trimStart={0}
-              trimEnd={projectState.totalDuration}
-              onTimeUpdate={handleTimeUpdate}
-              onPlayPause={handlePlayPause}
+    <div className="flex flex-col h-screen bg-background text-white overflow-hidden">
+      {/* Main Content Area: 3-Panel Grid (50%) + Timeline (50%) */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top 50%: 3-Panel Grid */}
+        <div className="h-1/2 grid grid-cols-3 border-b border-border">
+          {/* Left Panel: Media Library */}
+          <div className="border-r border-border overflow-hidden">
+            <MediaLibrary
+              items={mediaLibrary}
+              onAddToTimeline={handleAddToTimeline}
+              onRemove={handleRemoveFromLibrary}
+              onDrop={handleFileDrop}
+              onImport={handleImport}
+              isRecording={recordingState.isRecording}
+              isPicking={recordingState.isPicking}
+              isSaving={recordingState.isSaving}
+              elapsedTime={recordingState.elapsedTime}
+              onStartPicking={handleStartPicking}
+              onStopRecording={handleStopRecording}
+              recordingError={recordingError}
+              onOpenSettings={handleOpenSettings}
             />
-          )}
+          </div>
 
-          {/* Timeline Section - Multi-Clip Support */}
-          {projectState.clips.length > 0 && (
-            <div style={styles.timelineSection}>
-              <div style={styles.timelineHeader}>
-                <h3 style={styles.sectionTitle}>Timeline</h3>
-                {projectState.selectedClipId && (
-                  <button
-                    onClick={() =>
-                      handleClipDelete(projectState.selectedClipId)
-                    }
-                    style={styles.deleteButton}
-                  >
-                    Delete Selected Clip
-                  </button>
-                )}
+          {/* Center Panel: Video Player */}
+          <div className="border-r border-border overflow-hidden flex flex-col items-center justify-center bg-panel p-4">
+            {error && (
+              <div className="mb-4 flex items-center gap-3 px-4 py-3 bg-red-900/20 border border-red-500 rounded-lg text-sm text-red-400">
+                <span className="text-lg">⚠️</span>
+                <span>{error}</span>
               </div>
-              <Timeline
-                clips={projectState.clips}
-                selectedClipId={projectState.selectedClipId}
-                currentTime={projectState.currentTime}
-                totalDuration={projectState.totalDuration}
-                onClipSelect={handleClipSelect}
-                onClipMove={handleClipMove}
-                onClipTrim={handleClipTrim}
-                onSeek={handleSeek}
+            )}
+
+            {projectState.clips.length > 0 && currentClip ? (
+              <VideoPlayer
+                ref={videoPlayerRef}
+                videoPath={currentClip.sourceFilePath}
+                currentTime={getSourceTimeForClip(currentClip, projectState.currentTime)}
+                trimStart={currentClip.sourceStart}
+                trimEnd={currentClip.sourceEnd}
+                onTimeUpdate={handleTimeUpdate}
+                onPlayPause={handlePlayPause}
               />
-            </div>
-          )}
+            ) : (
+              <div className="text-center text-gray-500">
+                <p className="text-lg mb-2">No video loaded</p>
+                <p className="text-sm">Import a video or record your screen to get started</p>
+              </div>
+            )}
+          </div>
 
-          {/* Timeline Info */}
-          {projectState.clips.length > 0 && (
-            <div style={styles.trimInfo}>
-              <div style={styles.trimInfoLabel}>Total Duration:</div>
-              <div style={styles.trimInfoValue}>
-                {typeof projectState.totalDuration === "number"
-                  ? projectState.totalDuration.toFixed(1)
-                  : "0.0"}
-                s
-              </div>
-              <div style={{ ...styles.trimInfoLabel, marginLeft: "24px" }}>
-                Playhead:
-              </div>
-              <div style={styles.trimInfoValue}>
-                {typeof projectState.currentTime === "number"
-                  ? projectState.currentTime.toFixed(1)
-                  : "0.0"}
-                s
-              </div>
-            </div>
-          )}
-
-          {/* Export Button - Multi-Clip Support */}
-          {projectState.clips.length > 0 && (
-            <ExportButton
+          {/* Right Panel: Video Info */}
+          <div className="overflow-hidden">
+            <VideoInfoPanel
+              selectedClip={selectedClip}
+              totalClips={projectState.clips.length}
+              totalDuration={projectState.totalDuration}
+              currentTime={projectState.currentTime}
               clips={projectState.clips}
-              onExportComplete={(outputPath) => {
-                console.log("Export completed:", outputPath);
-                alert(`Video exported successfully!\n\n${outputPath}`);
-              }}
+              onExportComplete={() => {}}
             />
-          )}
-        </main>
-      </div>
+          </div>
+        </div>
 
-      {/* Footer */}
-      <footer style={styles.footer}>
-        <p style={styles.footerText}>
-          Agent 1: Screen Recording (Phase 1) ✅ | Agent 3: Media Library ✅ |
-          Multi-clip Timeline ✅
-        </p>
-      </footer>
+        {/* Bottom 50%: Timeline */}
+        <div className="h-1/2 flex flex-col bg-panel overflow-hidden">
+          <div className="px-4 py-3 flex items-center justify-center relative">
+            <div className="flex items-center gap-2">
+              <Film className="w-4 h-4 text-accent" />
+              <h3 className="text-sm font-bold tracking-wide">Timeline</h3>
+            </div>
+            {projectState.selectedClipId && (
+              <button
+                onClick={() => handleClipDelete(projectState.selectedClipId)}
+                className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded transition-colors absolute right-4 cursor-pointer"
+              >
+                Delete Selected Clip
+              </button>
+            )}
+          </div>
+          <div className="flex-1 overflow-auto">
+            <Timeline
+              clips={projectState.clips}
+              selectedClipId={projectState.selectedClipId}
+              currentTime={projectState.currentTime}
+              totalDuration={Math.max(projectState.totalDuration, 60)}
+              onClipSelect={handleClipSelect}
+              onClipMove={handleClipMove}
+              onClipTrim={handleClipTrim}
+              onSeek={handleSeek}
+              onScrub={handleScrub}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
 
 export default App;
-
-// Styles
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    display: "flex",
-    flexDirection: "column",
-    height: "100vh",
-    backgroundColor: "#0a0a0a",
-    color: "#fff",
-    overflow: "hidden",
-  },
-  header: {
-    padding: "24px",
-    backgroundColor: "#1a1a1a",
-    borderBottom: "2px solid #3b82f6",
-    textAlign: "center",
-  },
-  title: {
-    fontSize: "32px",
-    fontWeight: "bold",
-    color: "#3b82f6",
-    margin: 0,
-    marginBottom: "4px",
-  },
-  subtitle: {
-    fontSize: "14px",
-    color: "#888",
-    margin: 0,
-    textTransform: "uppercase",
-    letterSpacing: "2px",
-  },
-  mainLayout: {
-    flex: 1,
-    display: "flex",
-    overflow: "hidden",
-  },
-  main: {
-    flex: 1,
-    padding: "24px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "24px",
-    overflowY: "auto",
-    overflowX: "hidden",
-  },
-  errorBox: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    padding: "16px",
-    backgroundColor: "#2a1515",
-    border: "1px solid #ff4444",
-    borderRadius: "8px",
-  },
-  errorIcon: {
-    fontSize: "24px",
-  },
-  errorText: {
-    fontSize: "14px",
-    color: "#ff6666",
-  },
-  timelineSection: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-    padding: "16px",
-    backgroundColor: "#1a1a1a",
-    borderRadius: "8px",
-    border: "1px solid #333",
-  },
-  timelineHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  sectionTitle: {
-    fontSize: "16px",
-    color: "#fff",
-    margin: 0,
-    fontWeight: "600",
-  },
-  deleteButton: {
-    padding: "8px 16px",
-    backgroundColor: "#ff4444",
-    color: "#fff",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-    transition: "background-color 0.2s",
-  },
-  clipInfo: {
-    display: "flex",
-    alignItems: "center",
-    gap: "24px",
-    padding: "12px 16px",
-    backgroundColor: "#1a1a1a",
-    borderRadius: "6px",
-    border: "1px solid #333",
-  },
-  clipInfoLabel: {
-    fontSize: "14px",
-    color: "#888",
-    fontWeight: "600",
-  },
-  clipInfoValue: {
-    color: "#3b82f6",
-    fontWeight: "bold",
-  },
-  trimInfo: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    padding: "12px 16px",
-    backgroundColor: "#1a1a1a",
-    borderRadius: "6px",
-    border: "1px solid #333",
-  },
-  trimInfoLabel: {
-    fontSize: "14px",
-    color: "#888",
-    fontWeight: "600",
-  },
-  trimInfoValue: {
-    fontSize: "14px",
-    color: "#3b82f6",
-    fontFamily: "monospace",
-    fontWeight: "bold",
-  },
-  footer: {
-    padding: "16px",
-    backgroundColor: "#1a1a1a",
-    borderTop: "1px solid #333",
-    textAlign: "center",
-  },
-  footerText: {
-    fontSize: "12px",
-    color: "#666",
-    margin: 0,
-  },
-};

@@ -20,11 +20,12 @@ export const ClipItem = ({
   clip,
   isSelected,
   pixelsPerSecond,
+  xOffset = 0,
   onSelect,
   onMove,
   onTrim,
 }: ClipItemProps) => {
-  const clipX = timeToPixels(clip.timelineStart);
+  const clipX = timeToPixels(clip.timelineStart) + xOffset;
   const clipWidth = timeToPixels(clip.duration);
 
   // Calculate trim handle positions relative to source video
@@ -36,7 +37,7 @@ export const ClipItem = ({
    */
   const handleClipDragEnd = (e: any) => {
     const newX = e.target.x();
-    const newTimelineStart = Math.max(0, newX / pixelsPerSecond);
+    const newTimelineStart = Math.max(0, (newX - xOffset) / pixelsPerSecond);
     onMove(newTimelineStart);
 
     // Reset drag position (let parent handle state update)

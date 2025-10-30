@@ -1,5 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #0a0a0a;
+  --color-panel: #1a1a1a;
+  --color-border: #333;
+  --color-accent: #3b82f6;
+}
+
 * {
   box-sizing: border-box;
+}
+
+body, h1, h2, h3, h4, h5, h6, p, ul, ol, li, figure, figcaption, blockquote, dl, dd {
   margin: 0;
   padding: 0;
 }
@@ -8,7 +20,7 @@ body {
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
     sans-serif;
-  background-color: #1a1a1a;
+  background-color: #0a0a0a;
   color: #ffffff;
   overflow: hidden;
 }
@@ -18,23 +30,27 @@ body {
   height: 100vh;
 }
 
-/* Media Thumbnail hover styles */
-.media-thumbnail:hover {
-  border-color: #3b82f6;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+/* Custom scrollbar styling for better visibility */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #444 #1a1a1a;
 }
 
-.media-thumbnail:hover .media-thumbnail-remove {
-  opacity: 1;
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
-.media-thumbnail-remove:hover {
-  background-color: #ff4444 !important;
-  transform: scale(1.1);
+*::-webkit-scrollbar-track {
+  background: #1a1a1a;
 }
 
-/* Media Library drag-over state */
-.media-library-drag-over {
-  border-color: #3b82f6 !important;
-  background-color: rgba(59, 130, 246, 0.1) !important;
+*::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 4px;
 }
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
