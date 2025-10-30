@@ -689,6 +689,92 @@ ipcMain.handle("convert-webm-to-mov", async (event, webmPath: string) => {
   });
 });
 
+// Handler: Overlay webcam on screen recording (PiP in bottom-right)
+ipcMain.handle(
+  "overlay-webcam-on-screen",
+  async (
+    event,
+    screenPath: string,
+    webcamPath: string,
+    offsetSeconds: number = 0,
+  ) => {
+    return new Promise((resolve, reject) => {
+      if (!ffmpegPath) {
+        reject(new Error("FFmpeg not available for overlay"));
+        return;
+      }
+
+      const outputPath = screenPath.replace(/\.mov$/, "_with_webcam.mov");
+
+      console.log("[FFmpeg] 🎬 Overlaying webcam on screen:");
+      console.log(`[FFmpeg]   Screen: ${screenPath}`);
+      console.log(`[FFmpeg]   Webcam: ${webcamPath}`);
+      console.log(`[FFmpeg]   Output: ${outputPath}`);
+      console.log(`[FFmpeg]   Offset: ${offsetSeconds.toFixed(3)}s`);
+
+      // Fix framerate mismatch between screen (60fps) and webcam (30fps)
+      console.log("[FFmpeg] 🔧 Fixing framerate mismatch and syncing streams");
+
+      const command = ffmpeg(screenPath)
+        .input(webcamPath)
+        .complexFilter([
+          // Scale webcam and set to 60fps to match screen
+          "[1:v]scale=320:240,fps=60[pip]",
+          "[0:v][pip]overlay=W-w-20:H-h-20",
+        ])
+        .videoCodec("libx264")
+        .audioCodec("aac")
+        .outputOptions([
+          "-movflags",
+          "+faststart",
+          // Ensure we use the shortest stream duration to avoid black frames
+          "-shortest",
+        ])
+        .output(outputPath);
+
+      let ffmpegStderr = "";
+
+      command
+        .on("start", (commandLine) => {
+          console.log("[FFmpeg] 🚀 Spawned FFmpeg command:");
+          console.log(`[FFmpeg] ${commandLine}`);
+          console.log(
+            `[FFmpeg] 🔍 WATCH THE COMMAND ABOVE - Check the filter_complex parameter!`,
+          );
+        })
+        .on("stderr", (stderrLine) => {
+          ffmpegStderr += stderrLine + "\n";
+          // Log every line to see what FFmpeg is actually doing
+          console.log(`[FFmpeg stderr] ${stderrLine}`);
+        })
+        .on("progress", (progress) => {
+          if (progress.percent) {
+            console.log(
+              `[FFmpeg] ⏳ Progress: ${progress.percent.toFixed(1)}%`,
+            );
+          }
+        })
+        .on("end", () => {
+          console.log("[FFmpeg] ✅ Overlay complete:", outputPath);
+          console.log("[FFmpeg] 📋 Full FFmpeg stderr output:");
+          console.log(ffmpegStderr);
+          // Delete temp webcam file
+          fs.promises.unlink(webcamPath).catch((err) => {
+            console.warn("[FFmpeg] ⚠️  Could not delete temp webcam:", err);
+          });
+          resolve(outputPath);
+        })
+        .on("error", (err) => {
+          console.error("[FFmpeg] ❌ Overlay error:", err);
+          console.error("[FFmpeg] 📋 FFmpeg stderr before error:");
+          console.error(ffmpegStderr);
+          reject(err);
+        })
+        .run();
+    });
+  },
+);
+
 // screencapture recording process reference
 let screencaptureRecordingProcess: ChildProcess | null = null;
 

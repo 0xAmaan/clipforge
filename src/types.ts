@@ -53,7 +53,7 @@ export interface ScreenSource {
   type: "screen" | "window";
 }
 
-export type RecordingMode = "screen" | "webcam";
+export type RecordingMode = "screen" | "webcam" | "both";
 
 export interface RecordingState {
   isRecording: boolean;

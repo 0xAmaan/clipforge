@@ -63,6 +63,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("request-camera-permission"),
   convertWebmToMov: (webmPath: string) =>
     ipcRenderer.invoke("convert-webm-to-mov", webmPath),
+  overlayWebcamOnScreen: (
+    screenPath: string,
+    webcamPath: string,
+    offsetSeconds: number,
+  ) =>
+    ipcRenderer.invoke(
+      "overlay-webcam-on-screen",
+      screenPath,
+      webcamPath,
+      offsetSeconds,
+    ),
 
   // screencapture recording
   getAVFoundationDisplays: () =>

@@ -44,6 +44,11 @@ declare global {
         platform: string;
       }>;
       convertWebmToMov: (webmPath: string) => Promise<string>;
+      overlayWebcamOnScreen: (
+        screenPath: string,
+        webcamPath: string,
+        offsetSeconds: number,
+      ) => Promise<string>;
 
       // screencapture recording
       getAVFoundationDisplays: () => Promise<AVFoundationDisplay[]>;

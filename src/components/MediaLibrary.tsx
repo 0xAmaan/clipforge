@@ -153,7 +153,7 @@ export const MediaLibrary = ({
                       {/* Mode selector */}
                       <div className="space-y-2">
                         <label className="text-xs font-semibold text-gray-300">Recording Mode</label>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-3 gap-2">
                           <button
                             onClick={() => onModeChange && onModeChange("screen")}
                             className={cn(
@@ -176,6 +176,17 @@ export const MediaLibrary = ({
                           >
                             📹 Webcam
                           </button>
+                          <button
+                            onClick={() => onModeChange && onModeChange("both")}
+                            className={cn(
+                              "px-3 py-2 rounded text-sm font-semibold transition-colors cursor-pointer",
+                              recordingMode === "both"
+                                ? "bg-accent text-white"
+                                : "bg-background text-gray-400 hover:bg-background/80"
+                            )}
+                          >
+                            🎬 Both
+                          </button>
                         </div>
                       </div>
 
@@ -192,7 +203,11 @@ export const MediaLibrary = ({
                         {isPicking ? "Starting..." : "Start Recording"}
                       </button>
                       <p className="text-xs text-gray-400 italic text-center">
-                        {recordingMode === "screen" ? "Record your screen" : "Record from webcam"}
+                        {recordingMode === "screen"
+                          ? "Record your screen"
+                          : recordingMode === "webcam"
+                          ? "Record from webcam"
+                          : "Record screen + webcam (PiP)"}
                       </p>
                     </div>
                   ) : isSaving ? (

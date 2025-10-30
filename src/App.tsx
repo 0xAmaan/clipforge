@@ -571,13 +571,15 @@ const App = () => {
   };
 
   /**
-   * Handle start recording - delegates to screen or webcam based on mode
+   * Handle start recording - delegates to screen, webcam, or both based on mode
    */
   const handleStartPicking = async () => {
     if (recordingState.mode === "screen") {
       await handleStartScreenRecording();
-    } else {
+    } else if (recordingState.mode === "webcam") {
       await handleStartWebcamRecording();
+    } else {
+      await handleStartBothRecording();
     }
   };
 
@@ -740,13 +742,169 @@ You can click "Open Settings" below to go directly to the settings page.`;
   };
 
   /**
+   * Handle start both screen + webcam recording
+   */
+  const handleStartBothRecording = async () => {
+    setRecordingState((prev) => ({
+      ...prev,
+      isPicking: true,
+      isRecording: false,
+    }));
+    setRecordingError(null);
+
+    try {
+      // Check camera permission first
+      const permissionStatus = await window.electronAPI.checkCameraPermission();
+
+      if (!permissionStatus.granted) {
+        const result = await window.electronAPI.requestCameraPermission();
+        if (!result.granted) {
+          throw new Error("Camera permission denied");
+        }
+      }
+
+      // STEP 1: Set up webcam stream (but don't start recording yet)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false, // Screen recording will capture audio
+      });
+
+      webcamStreamRef.current = stream;
+      recordedChunksRef.current = [];
+
+      // Create MediaRecorder - use VP9 for better quality and more reliable timestamps
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: "video/webm;codecs=vp9",
+        videoBitsPerSecond: 2500000, // 2.5 Mbps for smooth video
+      });
+
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      // STEP 2: Set up screen recording (but don't start yet)
+      const displays = await window.electronAPI.getAVFoundationDisplays();
+
+      if (displays.length === 0) {
+        throw new Error("No displays available for recording");
+      }
+
+      const displayId = displays[0].id;
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/:/g, "-")
+        .replace(/\..+/, "");
+      const filename = `recording_${timestamp}.mov`;
+
+      // STEP 3: Start BOTH recordings with precise timestamp tracking
+      console.log("[sync] 🎬 Starting synchronized recording...");
+      console.log("[sync] 🧪 DIAGNOSTIC MODE: Let's figure out which recording actually starts first");
+
+      // Mark when we initiate screen recording (before IPC call)
+      const screenRequestTime = performance.now();
+      console.log(`[sync] ⏱️  Screen recording IPC sent at: ${screenRequestTime.toFixed(3)}ms`);
+
+      // Start screen recording first (it's slower to start)
+      const screenRecordingPromise = window.electronAPI.startFFmpegRecording(
+        displayId,
+        filename,
+      );
+
+      // Mark when we start webcam recording
+      const webcamStartTime = performance.now();
+      console.log(`[sync] 📹 Webcam MediaRecorder.start() called at: ${webcamStartTime.toFixed(3)}ms`);
+      mediaRecorder.start(1000);
+
+      // Wait for screen recording to confirm it started
+      const outputPath = await screenRecordingPromise;
+      const screenConfirmTime = performance.now();
+      console.log(`[sync] ✅ Screen recording IPC confirmed at: ${screenConfirmTime.toFixed(3)}ms`);
+
+      // Calculate the offset
+      const offsetMs = screenConfirmTime - webcamStartTime;
+      const offsetSeconds = offsetMs / 1000;
+
+      console.log(`[sync] 🔄 Raw offset calculation: ${offsetMs.toFixed(3)}ms (${offsetSeconds.toFixed(3)}s)`);
+      console.log(`[sync] 📊 Timing breakdown:
+  - Screen IPC request: ${screenRequestTime.toFixed(3)}ms
+  - Webcam start call:  ${webcamStartTime.toFixed(3)}ms
+  - Screen IPC confirm: ${screenConfirmTime.toFixed(3)}ms
+  - IPC latency:        ${(webcamStartTime - screenRequestTime).toFixed(3)}ms
+  - Confirmation delay: ${(screenConfirmTime - webcamStartTime).toFixed(3)}ms`);
+
+      console.log(`[sync] 🤔 ANALYSIS:`);
+      console.log(`[sync]    - Webcam MediaRecorder.start() was called ${offsetMs.toFixed(3)}ms BEFORE screen IPC confirmed`);
+      console.log(`[sync]    - BUT: IPC confirmation ≠ actual recording start time!`);
+      console.log(`[sync]    - Screen recording might have ALREADY been capturing frames before IPC returned`);
+      console.log(`[sync]    - MediaRecorder has ~100-500ms internal buffer/startup time`);
+      console.log(`[sync]    - If webcam appears DELAYED, it means screen captured frames BEFORE webcam did`);
+      console.log(`[sync] `);
+      console.log(`[sync] 💡 CURRENT STRATEGY: Trimming ${offsetSeconds.toFixed(3)}s from WEBCAM start`);
+      console.log(`[sync]    This assumes webcam started recording first.`);
+      console.log(`[sync]    If webcam appears delayed in result, we need to REVERSE this!`);
+
+      // Store the offset for later use when combining videos
+      (recordingOutputPathRef as any).offsetSeconds = offsetSeconds;
+
+      recordingOutputPathRef.current = outputPath;
+
+      setRecordingState((prev) => ({
+        ...prev,
+        isRecording: true,
+        isPicking: false,
+        startTime: Date.now(),
+        elapsedTime: 0,
+      }));
+    } catch (err) {
+      console.error("[both] Failed to start recording:", err);
+
+      // Cleanup webcam if started
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((track) => track.stop());
+        webcamStreamRef.current = null;
+      }
+
+      let errorMessage = "Unable to start recording.";
+
+      if (err instanceof Error) {
+        if (err.message.includes("permission") || err.message.includes("denied")) {
+          errorMessage = `Permission required for camera and/or screen recording.
+
+Please ensure:
+1. System Settings > Privacy & Security > Camera
+2. System Settings > Privacy & Security > Screen Recording
+3. Enable permissions for this app
+4. Completely quit and restart this app
+
+You can click "Open Settings" below to go directly to the settings page.`;
+        } else {
+          errorMessage = `Error: ${err.message}`;
+        }
+      }
+
+      setRecordingError(errorMessage);
+      setRecordingState((prev) => ({
+        ...prev,
+        isPicking: false,
+        isRecording: false,
+      }));
+    }
+  };
+
+  /**
    * Handle stop recording - delegates based on mode
    */
   const handleStopRecording = async () => {
     if (recordingState.mode === "screen") {
       await handleStopScreenRecording();
-    } else {
+    } else if (recordingState.mode === "webcam") {
       await handleStopWebcamRecording();
+    } else {
+      await handleStopBothRecording();
     }
   };
 
@@ -848,6 +1006,104 @@ You can click "Open Settings" below to go directly to the settings page.`;
   };
 
   /**
+   * Handle stop both screen + webcam recording
+   */
+  const handleStopBothRecording = async () => {
+    try {
+      // Set to "saving" state
+      setRecordingState((prev) => ({
+        ...prev,
+        isRecording: false,
+        isSaving: true,
+      }));
+
+      console.log("[sync] 🛑 Stopping both recordings...");
+
+      // Stop screen recording first
+      const stopScreenTime = performance.now();
+      await window.electronAPI.stopFFmpegRecording();
+      console.log(`[sync] ✅ Screen recording stopped at: ${stopScreenTime.toFixed(3)}ms`);
+
+      // Stop webcam recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        const stopWebcamTime = performance.now();
+        mediaRecorderRef.current.stop();
+
+        // Wait for final data
+        await new Promise<void>((resolve) => {
+          mediaRecorderRef.current!.onstop = () => resolve();
+        });
+        console.log(`[sync] ✅ Webcam recording stopped at: ${stopWebcamTime.toFixed(3)}ms`);
+      }
+
+      // Stop webcam stream
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((track) => track.stop());
+        webcamStreamRef.current = null;
+      }
+
+      // Create blob from webcam chunks
+      const webcamBlob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+
+      // Generate filenames
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/:/g, "-")
+        .replace(/\..+/, "");
+      const webcamFilename = `webcam_temp_${timestamp}.webm`;
+
+      // Save webcam recording to temp file
+      const webcamArrayBuffer = await webcamBlob.arrayBuffer();
+      const webcamPath = await window.electronAPI.saveRecording(webcamArrayBuffer, webcamFilename);
+      console.log("[sync] 💾 Saved webcam to:", webcamPath);
+
+      // Wait for screen recording to finalize (same as handleRecordingStopped)
+      console.log("[sync] ⏳ Waiting for screen recording to finalize...");
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      const screenPath = recordingOutputPathRef.current;
+      if (!screenPath) {
+        throw new Error("Screen recording path not set");
+      }
+
+      console.log("[sync] 📂 Files ready for overlay:");
+      console.log(`[sync]   - Screen: ${screenPath}`);
+      console.log(`[sync]   - Webcam: ${webcamPath}`);
+      console.log(`[sync] ✅ Using simple overlay - no timing adjustments`);
+
+      // Use FFmpeg to overlay webcam on screen (PiP in bottom-right)
+      // NO OFFSET - let FFmpeg handle it naturally
+      const combinedPath = await window.electronAPI.overlayWebcamOnScreen(
+        screenPath,
+        webcamPath,
+        0, // No offset
+      );
+
+      console.log("[sync] ✅ Combined recording created:", combinedPath);
+
+      // Set combined path as the output
+      recordingOutputPathRef.current = combinedPath;
+
+      // Import to library
+      await handleRecordingStopped();
+
+      // Cleanup
+      recordedChunksRef.current = [];
+
+      console.log("[sync] 🎉 Recording successfully saved and imported!");
+    } catch (err) {
+      console.error("[both] Failed to stop recording:", err);
+      setRecordingError(
+        err instanceof Error ? err.message : "Failed to stop recording",
+      );
+      setRecordingState((prev) => ({
+        ...prev,
+        isSaving: false,
+      }));
+    }
+  };
+
+  /**
    * Handle recording stopped - import MOV file
    */
   const handleRecordingStopped = async () => {
@@ -916,15 +1172,16 @@ You can click "Open Settings" below to go directly to the settings page.`;
       // Add to media library only (not to timeline)
       setMediaLibrary((prev) => [...prev, newMediaItem]);
 
-      // Reset recording state
-      setRecordingState({
+      // Reset recording state (keep the mode for next recording)
+      setRecordingState((prev) => ({
         isRecording: false,
         isPicking: false,
         isSaving: false,
         selectedSource: null,
         startTime: null,
         elapsedTime: 0,
-      });
+        mode: prev.mode, // Keep the current mode
+      }));
 
       // Clear refs
       recordingStartTimeRef.current = null;
