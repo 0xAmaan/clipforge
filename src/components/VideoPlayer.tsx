@@ -21,11 +21,13 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
   (
     {
       videoPath,
+      clipId,
       currentTime,
       displayTime,
       trimStart,
       trimEnd,
       totalDuration,
+      isPlaying,
       onTimeUpdate,
       onPlayPause,
     },
@@ -63,10 +65,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         // Clamp playback to trim boundaries
         if (currentTime < trimStart) {
           videoRef.current.currentTime = trimStart;
-        } else if (currentTime > trimEnd) {
-          videoRef.current.currentTime = trimEnd;
-          videoRef.current.pause();
         }
+        // Note: Don't pause when reaching trimEnd - let App.tsx handle clip transitions
 
         onTimeUpdate(videoRef.current.currentTime);
       }
@@ -89,7 +89,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       }
     };
 
-    // Update video source when videoPath changes
+    // Track the last clip ID to detect when we switch clips (even if same file)
+    const lastClipIdRef = useRef<string | null>(null);
+    const isPlayingRef = useRef<boolean>(false);
+
+    // Keep isPlaying ref in sync
+    useEffect(() => {
+      isPlayingRef.current = isPlaying || false;
+    }, [isPlaying]);
+
+    // Update video source when videoPath or clipId changes
     useEffect(() => {
       if (videoRef.current && videoPath) {
         // Convert file path to file:// URL
@@ -97,19 +106,27 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           ? videoPath
           : `file://${videoPath}`;
 
-        // Only update src if it's different to avoid resetting the video
-        if (videoRef.current.src === videoUrl) {
+        // Check if we're switching to a different clip
+        const isNewClip = clipId !== lastClipIdRef.current;
+        const isSameFile = videoRef.current.src === videoUrl;
+
+        // Skip reload only if it's the same file AND same clip
+        if (isSameFile && !isNewClip) {
           return;
         }
+
+        lastClipIdRef.current = clipId || null;
 
         videoRef.current.src = videoUrl;
         videoRef.current.load(); // Explicitly load the new source
 
-        // Autoplay when video is loaded
+        // Autoplay when video is loaded if playback was active (for clip transitions)
         videoRef.current.onloadeddata = () => {
-          videoRef.current?.play().catch(err => {
-            console.error('Autoplay failed:', err);
-          });
+          if (isPlayingRef.current && videoRef.current) {
+            videoRef.current.play().catch(err => {
+              console.error('Autoplay failed:', err);
+            });
+          }
         };
 
         // Add error handler
@@ -119,7 +136,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           console.error('Video error message:', videoRef.current?.error?.message);
         };
       }
-    }, [videoPath]);
+    }, [videoPath, clipId]);
 
     // Seek to currentTime when it's updated externally (e.g., from timeline)
     useEffect(() => {

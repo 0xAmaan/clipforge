@@ -126,11 +126,18 @@ export const ClipItem = ({
   isSelected,
   pixelsPerSecond,
   xOffset = 0,
+  isDragging = false,
+  dragX,
   onSelect,
-  onMove,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
   onTrim,
 }: ClipItemProps) => {
-  const clipX = (clip.timelineStart * pixelsPerSecond) + xOffset;
+  // Use dragX if dragging, otherwise use timeline position
+  const clipX = isDragging && dragX !== undefined
+    ? dragX
+    : (clip.timelineStart * pixelsPerSecond) + xOffset;
   const clipWidth = clip.duration * pixelsPerSecond;
 
   // Get file name from path for text overlay
@@ -143,12 +150,23 @@ export const ClipItem = ({
   /**
    * Handle clip body dragging (reordering on timeline)
    */
-  const handleClipDragEnd = (e: any) => {
-    const newX = e.target.x();
-    const newTimelineStart = Math.max(0, (newX - xOffset) / pixelsPerSecond);
-    onMove(newTimelineStart);
+  const handleClipDragStart = (e: any) => {
+    if (onDragStart) {
+      onDragStart(e.target.x());
+    }
+  };
 
-    // Reset drag position (let parent handle state update)
+  const handleClipDragMove = (e: any) => {
+    if (onDragMove) {
+      onDragMove(e.target.x());
+    }
+  };
+
+  const handleClipDragEnd = (e: any) => {
+    if (onDragEnd) {
+      onDragEnd();
+    }
+    // Reset drag position
     e.target.x(clipX);
   };
 
@@ -307,11 +325,14 @@ export const ClipItem = ({
         onClick={onSelect}
         onTap={onSelect}
         draggable
+        onDragStart={handleClipDragStart}
+        onDragMove={handleClipDragMove}
         onDragEnd={handleClipDragEnd}
+        opacity={isDragging ? 1 : 1}
       />
 
       {/* Left Trim Area - invisible with cursor change */}
-      {isSelected && (
+      {isSelected && !isDragging && (
         <Rect
           x={leftTrimX}
           y={CLIP_Y}
@@ -346,7 +367,7 @@ export const ClipItem = ({
       )}
 
       {/* Right Trim Area - invisible with cursor change */}
-      {isSelected && (
+      {isSelected && !isDragging && (
         <Rect
           x={rightTrimX}
           y={CLIP_Y}

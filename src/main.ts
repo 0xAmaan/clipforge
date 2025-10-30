@@ -386,20 +386,43 @@ ipcMain.handle(
           const trimmedPath = path.join(tempDir, `clip_${i}.mp4`);
 
           await new Promise((resolveTrim, rejectTrim) => {
-            ffmpeg(clip.sourceFilePath)
+            const command = ffmpeg(clip.sourceFilePath)
               .setStartTime(clip.sourceStart)
-              .setDuration(clip.sourceEnd - clip.sourceStart)
-              .outputOptions("-c copy") // Fast trim
+              .setDuration(clip.sourceEnd - clip.sourceStart);
+
+            // For fast mode, we need to re-encode to ensure compatibility
+            // when mixing different formats (MOV + MP4)
+            // Use a fast preset to minimize encode time
+            if (options.mode === "fast") {
+              command
+                .outputOptions("-c:v libx264")
+                .outputOptions("-preset ultrafast") // Fastest encoding
+                .outputOptions("-crf 23")
+                .outputOptions("-c:a aac")
+                .outputOptions("-b:a 192k")
+                .outputOptions("-movflags +faststart");
+            } else {
+              // Re-encode mode: use better quality settings
+              command
+                .outputOptions("-c:v libx264")
+                .outputOptions("-preset medium")
+                .outputOptions("-crf 23")
+                .outputOptions("-c:a aac")
+                .outputOptions("-b:a 192k")
+                .outputOptions("-movflags +faststart");
+            }
+
+            command
               .output(trimmedPath)
               .on("progress", (progress) => {
-                const clipProgress = (i / clips.length) * 100;
+                const clipProgress = (i / clips.length) * 50; // 0-50%
                 const totalProgress =
-                  clipProgress + (progress.percent || 0) / clips.length;
+                  clipProgress + (progress.percent || 0) / clips.length / 2;
                 if (mainWindow) {
                   mainWindow.webContents.send(
                     "export-progress",
                     totalProgress,
-                    `Trimming clip ${i + 1}/${clips.length}...`,
+                    `Processing clip ${i + 1}/${clips.length}...`,
                   );
                 }
               })
@@ -433,30 +456,34 @@ ipcMain.handle(
           .input(concatFilePath)
           .inputOptions(["-f concat", "-safe 0"]);
 
-        // Apply mode-specific options
-        if (options.mode === "fast") {
-          // Fast mode: copy streams (no re-encode)
-          command.outputOptions("-c copy");
-        } else {
-          // Re-encode mode: transcode with quality settings
-          command
-            .outputOptions("-c:v libx264") // H.264 codec
-            .outputOptions("-preset medium") // Balance speed/quality
-            .outputOptions("-crf 23") // Quality (lower = better)
-            .outputOptions("-c:a aac") // AAC audio
-            .outputOptions("-b:a 192k"); // Audio bitrate
+        // Check if we need to scale (re-encode mode with resolution)
+        const needsScaling =
+          options.mode === "reencode" &&
+          options.resolution &&
+          options.resolution !== "source";
 
-          // Apply resolution scaling if specified
-          if (options.resolution && options.resolution !== "source") {
-            const resolutionMap: Record<string, string> = {
-              "720p": "1280:720",
-              "1080p": "1920:1080",
-            };
-            const scale = resolutionMap[options.resolution];
-            if (scale) {
-              command.outputOptions([`-vf scale=${scale}`]);
-            }
+        if (needsScaling) {
+          // Re-encode with scaling
+          const resolutionMap: Record<string, string> = {
+            "720p": "1280:720",
+            "1080p": "1920:1080",
+          };
+          const scale = resolutionMap[options.resolution!];
+          if (scale) {
+            command
+              .outputOptions("-c:v libx264")
+              .outputOptions("-preset medium")
+              .outputOptions("-crf 23")
+              .outputOptions("-c:a aac")
+              .outputOptions("-b:a 192k")
+              .outputOptions(`-vf scale=${scale}`)
+              .outputOptions("-movflags +faststart");
           }
+        } else {
+          // All clips are already in the same format, just copy
+          command
+            .outputOptions("-c copy")
+            .outputOptions("-movflags +faststart");
         }
 
         command

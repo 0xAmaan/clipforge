@@ -6,7 +6,9 @@ interface UseKeyboardShortcutsProps {
   isPlaying: boolean;
   hasClips: boolean;
   selectedClipId: string | null;
+  currentTime: number;
   onDeleteClip: (clipId: string) => void;
+  onSplitClip: (timelineTime: number) => void;
 }
 
 /**
@@ -14,13 +16,16 @@ interface UseKeyboardShortcutsProps {
  * Currently supports:
  * - Space: Play/Pause video
  * - Delete: Remove selected clip from timeline
+ * - B: Split clip at playhead position
  */
 export const useKeyboardShortcuts = ({
   videoPlayerRef,
   isPlaying,
   hasClips,
   selectedClipId,
+  currentTime,
   onDeleteClip,
+  onSplitClip,
 }: UseKeyboardShortcutsProps) => {
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
@@ -48,6 +53,12 @@ export const useKeyboardShortcuts = ({
         }
       }
 
+      // B: Split clip at playhead position
+      if (e.code === "KeyB") {
+        e.preventDefault();
+        onSplitClip(currentTime);
+      }
+
       // Add more keyboard shortcuts here in the future
       // Example:
       // - Arrow Left/Right: Seek backward/forward
@@ -56,5 +67,13 @@ export const useKeyboardShortcuts = ({
 
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
-  }, [videoPlayerRef, isPlaying, hasClips, selectedClipId, onDeleteClip]);
+  }, [
+    videoPlayerRef,
+    isPlaying,
+    hasClips,
+    selectedClipId,
+    currentTime,
+    onDeleteClip,
+    onSplitClip,
+  ]);
 };

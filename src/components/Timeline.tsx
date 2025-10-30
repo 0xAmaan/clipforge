@@ -16,6 +16,7 @@ export const Timeline = ({
   totalDuration,
   onClipSelect,
   onClipMove,
+  onClipReorder,
   onClipTrim,
   onSeek,
   onScrub,
@@ -25,11 +26,21 @@ export const Timeline = ({
   const [containerWidth, setContainerWidth] = useState(800);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Zoom level (1.0 = default, 0.5 = zoomed out, 4.0 = zoomed in)
+  const [zoomLevel, setZoomLevel] = useState(1.0);
+  const MIN_ZOOM = 0.5;
+  const MAX_ZOOM = 4.0;
+
   // Scrubber state (for hover preview)
   const [isHovering, setIsHovering] = useState(false);
   const [scrubberTime, setScrubberTime] = useState(0);
   const scrubAnimationFrameRef = useRef<number | null>(null);
   const lastScrubTimeRef = useRef<number>(0);
+
+  // Drag state for clip reordering
+  const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
+  const [draggedClipX, setDraggedClipX] = useState<number>(0);
+  const [virtualClipOrder, setVirtualClipOrder] = useState<typeof clips>([]);
 
   // Constants
   const CLIP_HEIGHT = 120; // Doubled from 60px
@@ -49,7 +60,8 @@ export const Timeline = ({
   const TEXT_PADDING = 60; // 30px on each side for timestamp text visibility
 
   // Calculate pixels per second: fit 5 minutes in view, then become scrollable for longer durations
-  const PIXELS_PER_SECOND = containerWidth / DEFAULT_TIMELINE_DURATION;
+  // Multiply by zoomLevel to allow zooming in/out
+  const PIXELS_PER_SECOND = (containerWidth / DEFAULT_TIMELINE_DURATION) * zoomLevel;
 
   // Calculate timeline width - add extra padding so end markers don't get cut off
   // The extra width allows the 5:00 marker text to be fully visible
@@ -68,6 +80,61 @@ export const Timeline = ({
     return () => window.removeEventListener('resize', updateWidth);
   }, []);
 
+  // Handle mouse wheel zoom (Ctrl/Cmd + scroll)
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      // Only zoom if Ctrl (Windows/Linux) or Cmd (Mac) is pressed
+      if (!e.ctrlKey && !e.metaKey) return;
+
+      e.preventDefault();
+
+      if (!containerRef.current) return;
+
+      // Get mouse position relative to container
+      const rect = containerRef.current.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const scrollLeft = containerRef.current.scrollLeft;
+
+      // Calculate the time value under the cursor BEFORE zoom
+      const timeUnderCursor = pixelsToTime(mouseX + scrollLeft);
+
+      // Calculate new zoom level
+      const zoomSensitivity = 0.003; // Adjust for smooth zooming (50% faster than 0.002)
+      const zoomDelta = -e.deltaY * zoomSensitivity;
+      const newZoomLevel = Math.max(
+        MIN_ZOOM,
+        Math.min(MAX_ZOOM, zoomLevel + zoomDelta)
+      );
+
+      // Only update if zoom level actually changed
+      if (newZoomLevel !== zoomLevel) {
+        setZoomLevel(newZoomLevel);
+
+        // After zoom, calculate where that time value is now in pixels
+        // We need to do this in the next frame after state updates
+        requestAnimationFrame(() => {
+          if (!containerRef.current) return;
+
+          // Calculate new pixel position of the time that was under cursor
+          const newPixelsPerSecond = (containerWidth / DEFAULT_TIMELINE_DURATION) * newZoomLevel;
+          const newPixelPosition = timeUnderCursor * newPixelsPerSecond;
+
+          // Calculate new scroll position to keep that time under cursor
+          const newScrollLeft = newPixelPosition - mouseX;
+
+          // Apply new scroll position
+          containerRef.current.scrollLeft = Math.max(0, newScrollLeft);
+        });
+      }
+    };
+
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener('wheel', handleWheel, { passive: false });
+      return () => container.removeEventListener('wheel', handleWheel);
+    }
+  }, [zoomLevel, containerWidth]);
+
   // Helper functions for pixel conversion
   const timeToPixels = (time: number): number => {
     return time * PIXELS_PER_SECOND;
@@ -75,6 +142,14 @@ export const Timeline = ({
 
   const pixelsToTime = (pixels: number): number => {
     return pixels / PIXELS_PER_SECOND;
+  };
+
+  // Get appropriate marker interval based on zoom level
+  const getMarkerInterval = (zoom: number): number => {
+    if (zoom >= 3) return 5;      // 5 seconds at very high zoom (3x-4x)
+    if (zoom >= 1.5) return 15;   // 15 seconds at high zoom (1.5x-3x)
+    if (zoom >= 0.75) return 30;  // 30 seconds at normal zoom (0.75x-1.5x)
+    return 60;                     // 60 seconds at low zoom (0.5x-0.75x)
   };
 
   /**
@@ -131,6 +206,101 @@ export const Timeline = ({
     };
   }, []);
 
+  // Initialize virtual clip order when clips change (and not dragging)
+  useEffect(() => {
+    if (!draggingClipId) {
+      setVirtualClipOrder([...clips]);
+    }
+  }, [clips, draggingClipId]);
+
+  /**
+   * Handle clip drag start
+   */
+  const handleClipDragStart = (clipId: string, startX: number) => {
+    setDraggingClipId(clipId);
+    setDraggedClipX(startX);
+  };
+
+  /**
+   * Handle clip drag move - update virtual order based on position
+   */
+  const handleClipDragMove = (clipId: string, currentX: number) => {
+    setDraggedClipX(currentX);
+
+    // Find the dragged clip and calculate its center position
+    const draggedClip = virtualClipOrder.find(c => c.id === clipId);
+    if (!draggedClip) return;
+
+    const draggedClipCenter = currentX + (draggedClip.duration * PIXELS_PER_SECOND) / 2;
+
+    // Create a new order by determining where the dragged clip should go
+    const otherClips = virtualClipOrder.filter(c => c.id !== clipId);
+    const newOrder = [...otherClips];
+
+    // Find insertion index based on center point crossing
+    let insertIndex = 0;
+    let cumulativeTime = 0;
+
+    for (let i = 0; i < otherClips.length; i++) {
+      const clip = otherClips[i];
+      const clipStart = cumulativeTime * PIXELS_PER_SECOND;
+      const clipEnd = clipStart + (clip.duration * PIXELS_PER_SECOND);
+      const clipCenter = (clipStart + clipEnd) / 2;
+
+      if (draggedClipCenter > clipCenter) {
+        insertIndex = i + 1;
+      }
+
+      cumulativeTime += clip.duration;
+    }
+
+    newOrder.splice(insertIndex, 0, draggedClip);
+    setVirtualClipOrder(newOrder);
+  };
+
+  /**
+   * Handle clip drag end - update actual clip positions
+   */
+  const handleClipDragEnd = (clipId: string) => {
+    if (!draggingClipId) return;
+
+    // Use reorder callback if available (preferred method)
+    if (onClipReorder) {
+      // Reflow the virtual order to ensure proper sequential positioning
+      let cumulativeTime = 0;
+      const reorderedClips = virtualClipOrder.map(clip => {
+        const reflowedClip = {
+          ...clip,
+          timelineStart: cumulativeTime,
+        };
+        cumulativeTime += clip.duration;
+        return reflowedClip;
+      });
+
+      onClipReorder(reorderedClips);
+    } else {
+      // Fallback to old method (onClipMove)
+      let cumulativeTime = 0;
+      const draggedClip = virtualClipOrder.find(c => c.id === clipId);
+
+      for (const clip of virtualClipOrder) {
+        if (clip.id === clipId) {
+          break;
+        }
+        cumulativeTime += clip.duration;
+      }
+
+      // Update the clip's timeline position
+      if (draggedClip) {
+        onClipMove(clipId, cumulativeTime);
+      }
+    }
+
+    // Clear drag state
+    setDraggingClipId(null);
+    setDraggedClipX(0);
+  };
+
   /**
    * Handle clicking on the timeline to seek
    */
@@ -176,7 +346,7 @@ export const Timeline = ({
         >
           {(() => {
             const markers = [];
-            const interval = 30; // 30 second intervals
+            const interval = getMarkerInterval(zoomLevel); // Adaptive intervals based on zoom
 
             // Add markers at regular intervals
             for (let time = 0; time < effectiveDuration; time += interval) {
@@ -324,21 +494,67 @@ export const Timeline = ({
             cornerRadius={4}
           />
 
+          {/* Render ghost placeholder for dragged clip */}
+          {draggingClipId && (() => {
+            const draggedClip = clips.find(c => c.id === draggingClipId);
+            if (!draggedClip) return null;
+
+            // Find position in virtual order
+            let ghostX = 0;
+            for (const clip of virtualClipOrder) {
+              if (clip.id === draggingClipId) break;
+              ghostX += clip.duration * PIXELS_PER_SECOND;
+            }
+
+            const ghostWidth = draggedClip.duration * PIXELS_PER_SECOND;
+
+            return (
+              <>
+                {/* Blue outlined box with transparent fill */}
+                <Rect
+                  x={ghostX}
+                  y={CLIP_Y}
+                  width={ghostWidth}
+                  height={CLIP_HEIGHT}
+                  fill="rgba(59, 130, 246, 0.2)"
+                  stroke="#3B82F6"
+                  strokeWidth={2}
+                  cornerRadius={4}
+                  listening={false}
+                />
+              </>
+            );
+          })()}
+
           {/* Render all clips */}
-          {clips.map((clip) => (
-            <ClipItem
-              key={clip.id}
-              clip={clip}
-              isSelected={clip.id === selectedClipId}
-              pixelsPerSecond={PIXELS_PER_SECOND}
-              xOffset={0}
-              onSelect={() => onClipSelect(clip.id)}
-              onMove={(newTimelineStart) => onClipMove(clip.id, newTimelineStart)}
-              onTrim={(newSourceStart, newSourceEnd) =>
-                onClipTrim(clip.id, newSourceStart, newSourceEnd)
-              }
-            />
-          ))}
+          {virtualClipOrder.map((clip, index) => {
+            // Calculate position based on virtual order
+            let clipTimelineStart = 0;
+            for (let i = 0; i < index; i++) {
+              clipTimelineStart += virtualClipOrder[i].duration;
+            }
+
+            const isDragging = clip.id === draggingClipId;
+
+            return (
+              <ClipItem
+                key={clip.id}
+                clip={{...clip, timelineStart: clipTimelineStart}}
+                isSelected={clip.id === selectedClipId}
+                pixelsPerSecond={PIXELS_PER_SECOND}
+                xOffset={0}
+                isDragging={isDragging}
+                dragX={isDragging ? draggedClipX : undefined}
+                onSelect={() => onClipSelect(clip.id)}
+                onDragStart={(startX) => handleClipDragStart(clip.id, startX)}
+                onDragMove={(currentX) => handleClipDragMove(clip.id, currentX)}
+                onDragEnd={() => handleClipDragEnd(clip.id)}
+                onTrim={(newSourceStart, newSourceEnd) =>
+                  onClipTrim(clip.id, newSourceStart, newSourceEnd)
+                }
+              />
+            );
+          })}
 
         </Layer>
       </Stage>

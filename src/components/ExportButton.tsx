@@ -140,7 +140,7 @@ const ExportButton = ({ clips, onExportComplete }: MultiClipExportProps) => {
               transition: 'all 0.2s',
             }}
           >
-            Fast (Copy)
+            Fast
           </button>
           <button
             onClick={() => setExportMode("reencode")}
@@ -164,8 +164,8 @@ const ExportButton = ({ clips, onExportComplete }: MultiClipExportProps) => {
         {/* Mode Description */}
         <div style={{ fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
           {exportMode === "fast"
-            ? "Fast mode: No re-encoding, quick export (same quality)"
-            : "Re-encode mode: Transcode video with resolution options (slower)"}
+            ? "Fast mode: Quick encoding with ultrafast preset (good quality)"
+            : "Re-encode mode: Higher quality encoding with resolution options (slower)"}
         </div>
 
         {/* Resolution Selector (only for re-encode mode) */}

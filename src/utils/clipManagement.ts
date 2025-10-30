@@ -181,6 +181,74 @@ export const getSourceTimeForTimelineTime = (
 };
 
 /**
+ * Splits a clip at a given timeline time into two clips
+ * Returns updated clips array with the split clips
+ */
+export const splitClip = (
+  clips: Clip[],
+  timelineTime: number,
+): Clip[] | null => {
+  // Find the clip at the given timeline time
+  const clipToSplit = getClipAtTime(clips, timelineTime);
+
+  if (!clipToSplit) {
+    console.warn("No clip found at timeline time:", timelineTime);
+    return null;
+  }
+
+  // Calculate the split point in source time
+  const splitSourceTime = getSourceTimeForTimelineTime(
+    clipToSplit,
+    timelineTime,
+  );
+
+  // Don't split if we're too close to the beginning or end (within 0.1 seconds)
+  const minSplitDistance = 0.1;
+  if (
+    splitSourceTime - clipToSplit.sourceStart < minSplitDistance ||
+    clipToSplit.sourceEnd - splitSourceTime < minSplitDistance
+  ) {
+    console.warn("Split point too close to clip boundary");
+    return null;
+  }
+
+  // Create the first clip (before split point)
+  const firstClip: Clip = {
+    ...clipToSplit,
+    id: uuidv4(), // New ID for first clip
+    sourceEnd: splitSourceTime,
+    duration: splitSourceTime - clipToSplit.sourceStart,
+    thumbnails: undefined, // Clear thumbnails, they'll be regenerated if needed
+    thumbnailsLoading: false,
+  };
+
+  // Create the second clip (after split point)
+  const secondClip: Clip = {
+    ...clipToSplit,
+    id: uuidv4(), // New ID for second clip
+    sourceStart: splitSourceTime,
+    duration: clipToSplit.sourceEnd - splitSourceTime,
+    timelineStart: clipToSplit.timelineStart + firstClip.duration,
+    thumbnails: undefined, // Clear thumbnails, they'll be regenerated if needed
+    thumbnailsLoading: false,
+  };
+
+  // Replace the original clip with the two new clips
+  const updatedClips = clips
+    .map((clip) => {
+      if (clip.id === clipToSplit.id) {
+        // Return both clips in place of the original
+        return [firstClip, secondClip];
+      }
+      return clip;
+    })
+    .flat();
+
+  // Reflow to ensure proper positioning
+  return reflowClips(updatedClips);
+};
+
+/**
  * Validates that clips don't overlap (for debugging)
  */
 export const validateNoOverlaps = (clips: Clip[]): boolean => {

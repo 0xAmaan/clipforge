@@ -18,7 +18,9 @@ import {
   createClip,
   getClipAtTime,
   moveClip,
+  reflowClips,
   removeClip,
+  splitClip,
   updateClipTrim,
 } from "./utils/clipManagement";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -212,10 +214,13 @@ const App = () => {
 
     // Check if we've reached the end of the current clip
     if (sourceTime >= currentClip.sourceEnd) {
-      // Find the next clip on the timeline
-      const nextClip = projectState.clips.find(
-        clip => clip.timelineStart === currentClip.timelineStart + currentClip.duration
-      );
+      // Find the next clip on the timeline (allowing for small floating point errors)
+      const currentClipEnd = currentClip.timelineStart + currentClip.duration;
+      const sortedClips = [...projectState.clips].sort((a, b) => a.timelineStart - b.timelineStart);
+      const currentClipIndex = sortedClips.findIndex(clip => clip.id === currentClip.id);
+      const nextClip = currentClipIndex >= 0 && currentClipIndex < sortedClips.length - 1
+        ? sortedClips[currentClipIndex + 1]
+        : null;
 
       if (nextClip) {
         // Transition to the next clip
@@ -330,6 +335,19 @@ const App = () => {
   };
 
   /**
+   * Handle clip reordering from drag-and-drop
+   */
+  const handleClipReorder = (reorderedClips: Clip[]) => {
+    const newTotalDuration = calculateTotalDuration(reorderedClips);
+
+    setProjectState((prev) => ({
+      ...prev,
+      clips: reorderedClips,
+      totalDuration: newTotalDuration,
+    }));
+  };
+
+  /**
    * Handle trim changes for a specific clip
    */
   const handleClipTrim = (
@@ -343,11 +361,13 @@ const App = () => {
       newSourceStart,
       newSourceEnd,
     );
-    const newTotalDuration = calculateTotalDuration(updatedClips);
+    // Reflow clips to auto-snap them together and remove gaps
+    const reflowedClips = reflowClips(updatedClips);
+    const newTotalDuration = calculateTotalDuration(reflowedClips);
 
     setProjectState((prev) => ({
       ...prev,
-      clips: updatedClips,
+      clips: reflowedClips,
       totalDuration: newTotalDuration,
     }));
   };
@@ -369,6 +389,27 @@ const App = () => {
 
     // Note: Thumbnails are NOT cleaned up here - they persist when clip is removed from timeline
     // Thumbnails are only cleaned up when the video is removed from the library entirely
+  };
+
+  /**
+   * Handle clip splitting at playhead position
+   */
+  const handleSplitClip = (timelineTime: number) => {
+    const updatedClips = splitClip(projectState.clips, timelineTime);
+
+    // If split failed (no clip at position or too close to edge), do nothing
+    if (!updatedClips) {
+      console.warn('Failed to split clip at timeline time:', timelineTime);
+      return;
+    }
+
+    const newTotalDuration = calculateTotalDuration(updatedClips);
+
+    setProjectState((prev) => ({
+      ...prev,
+      clips: updatedClips,
+      totalDuration: newTotalDuration,
+    }));
   };
 
   /**
@@ -761,11 +802,13 @@ You can click "Open Settings" below to go directly to the settings page.`;
               <VideoPlayer
                 ref={videoPlayerRef}
                 videoPath={currentClip.sourceFilePath}
+                clipId={currentClip.id}
                 currentTime={getSourceTimeForClip(currentClip, projectState.currentTime)}
                 displayTime={scrubDisplayTime ?? projectState.currentTime}
                 trimStart={currentClip.sourceStart}
                 trimEnd={currentClip.sourceEnd}
                 totalDuration={projectState.totalDuration}
+                isPlaying={projectState.isPlaying}
                 onTimeUpdate={handleTimeUpdate}
                 onPlayPause={handlePlayPause}
               />
@@ -806,6 +849,7 @@ You can click "Open Settings" below to go directly to the settings page.`;
               totalDuration={Math.max(projectState.totalDuration, 60)}
               onClipSelect={handleClipSelect}
               onClipMove={handleClipMove}
+              onClipReorder={handleClipReorder}
               onClipTrim={handleClipTrim}
               onSeek={handleSeek}
               onScrub={handleScrub}

@@ -19,11 +19,13 @@ export interface VideoState {
 
 export interface VideoPlayerProps {
   videoPath: string | null;
+  clipId?: string; // Current clip ID (for detecting clip changes when same file is reused)
   currentTime: number;
   displayTime?: number; // Timeline time to display in UI (used during scrubbing)
   trimStart: number;
   trimEnd: number;
   totalDuration?: number; // Total timeline duration for display
+  isPlaying?: boolean; // Whether playback is active (for clip transitions)
   onTimeUpdate: (time: number) => void;
   onPlayPause: (isPlaying: boolean) => void;
 }
@@ -92,6 +94,7 @@ export interface MultiClipTimelineProps {
   totalDuration: number;
   onClipSelect: (id: string) => void;
   onClipMove: (id: string, newTimelineStart: number) => void;
+  onClipReorder?: (reorderedClips: Clip[]) => void; // Called when clips are reordered via drag-drop
   onClipTrim: (
     id: string,
     newSourceStart: number,
@@ -107,8 +110,12 @@ export interface ClipItemProps {
   isSelected: boolean;
   pixelsPerSecond: number;
   xOffset?: number; // Horizontal offset for padding
+  isDragging?: boolean; // Whether this clip is currently being dragged
+  dragX?: number; // X position during drag (for cursor following)
   onSelect: () => void;
-  onMove: (newTimelineStart: number) => void;
+  onDragStart?: (startX: number) => void;
+  onDragMove?: (currentX: number) => void;
+  onDragEnd?: () => void;
   onTrim: (newSourceStart: number, newSourceEnd: number) => void;
 }
 
