@@ -85,7 +85,7 @@ const App = () => {
     const saveLibrary = async () => {
       try {
         await window.electronAPI.saveMediaLibrary(mediaLibrary);
-        console.log('Media library saved:', mediaLibrary.length, 'items');
+        console.log("Media library saved:", mediaLibrary.length, "items");
       } catch (err) {
         console.error("Failed to save media library:", err);
       }
@@ -127,7 +127,7 @@ const App = () => {
     );
     if (existingItem) {
       // Already in library, nothing to do
-      console.log('Video already in library:', existingItem.fileName);
+      console.log("Video already in library:", existingItem.fileName);
       return;
     }
 
@@ -204,7 +204,10 @@ const App = () => {
       return;
     }
 
-    const currentClip = getClipAtTime(projectState.clips, projectState.currentTime);
+    const currentClip = getClipAtTime(
+      projectState.clips,
+      projectState.currentTime,
+    );
 
     if (!currentClip) return;
 
@@ -216,11 +219,16 @@ const App = () => {
     if (sourceTime >= currentClip.sourceEnd) {
       // Find the next clip on the timeline (allowing for small floating point errors)
       const currentClipEnd = currentClip.timelineStart + currentClip.duration;
-      const sortedClips = [...projectState.clips].sort((a, b) => a.timelineStart - b.timelineStart);
-      const currentClipIndex = sortedClips.findIndex(clip => clip.id === currentClip.id);
-      const nextClip = currentClipIndex >= 0 && currentClipIndex < sortedClips.length - 1
-        ? sortedClips[currentClipIndex + 1]
-        : null;
+      const sortedClips = [...projectState.clips].sort(
+        (a, b) => a.timelineStart - b.timelineStart,
+      );
+      const currentClipIndex = sortedClips.findIndex(
+        (clip) => clip.id === currentClip.id,
+      );
+      const nextClip =
+        currentClipIndex >= 0 && currentClipIndex < sortedClips.length - 1
+          ? sortedClips[currentClipIndex + 1]
+          : null;
 
       if (nextClip) {
         // Transition to the next clip
@@ -399,7 +407,7 @@ const App = () => {
 
     // If split failed (no clip at position or too close to edge), do nothing
     if (!updatedClips) {
-      console.warn('Failed to split clip at timeline time:', timelineTime);
+      console.warn("Failed to split clip at timeline time:", timelineTime);
       return;
     }
 
@@ -468,7 +476,7 @@ const App = () => {
             clips: prev.clips.map((clip) =>
               clip.id === newClip.id
                 ? { ...clip, thumbnails, thumbnailsLoading: false }
-                : clip
+                : clip,
             ),
           }));
         })
@@ -480,7 +488,7 @@ const App = () => {
             clips: prev.clips.map((clip) =>
               clip.id === newClip.id
                 ? { ...clip, thumbnailsLoading: false }
-                : clip
+                : clip,
             ),
           }));
         });
@@ -530,7 +538,9 @@ const App = () => {
       });
     } catch (err) {
       console.error("Failed to remove from library:", err);
-      setError(err instanceof Error ? err.message : "Failed to remove from library");
+      setError(
+        err instanceof Error ? err.message : "Failed to remove from library",
+      );
     }
   };
 
@@ -741,14 +751,21 @@ You can click "Open Settings" below to go directly to the settings page.`;
   };
 
   const selectedClip = projectState.selectedClipId
-    ? projectState.clips.find((c) => c.id === projectState.selectedClipId) || null
+    ? projectState.clips.find((c) => c.id === projectState.selectedClipId) ||
+      null
     : null;
 
   // Get the current clip being played at the current timeline time
-  const currentClip = getClipAtTime(projectState.clips, projectState.currentTime);
+  const currentClip = getClipAtTime(
+    projectState.clips,
+    projectState.currentTime,
+  );
 
   // Calculate the source video time within the current clip
-  const getSourceTimeForClip = (clip: Clip | null, timelineTime: number): number => {
+  const getSourceTimeForClip = (
+    clip: Clip | null,
+    timelineTime: number,
+  ): number => {
     if (!clip) return 0;
     // Convert timeline time to source video time
     const offsetIntoClip = timelineTime - clip.timelineStart;
@@ -803,7 +820,10 @@ You can click "Open Settings" below to go directly to the settings page.`;
                 ref={videoPlayerRef}
                 videoPath={currentClip.sourceFilePath}
                 clipId={currentClip.id}
-                currentTime={getSourceTimeForClip(currentClip, projectState.currentTime)}
+                currentTime={getSourceTimeForClip(
+                  currentClip,
+                  projectState.currentTime,
+                )}
                 displayTime={scrubDisplayTime ?? projectState.currentTime}
                 trimStart={currentClip.sourceStart}
                 trimEnd={currentClip.sourceEnd}
@@ -815,7 +835,9 @@ You can click "Open Settings" below to go directly to the settings page.`;
             ) : (
               <div className="text-center text-gray-500">
                 <p className="text-lg mb-2">No video loaded</p>
-                <p className="text-sm">Import a video or record your screen to get started</p>
+                <p className="text-sm">
+                  Import a video or record your screen to get started
+                </p>
               </div>
             )}
           </div>
