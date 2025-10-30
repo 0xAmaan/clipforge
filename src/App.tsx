@@ -47,6 +47,7 @@ const App = () => {
     selectedSource: null,
     startTime: null,
     elapsedTime: 0,
+    mode: "screen", // Default to screen recording
   });
 
   const [recordingError, setRecordingError] = useState<string | null>(null);
@@ -59,6 +60,11 @@ const App = () => {
   const recordingOutputPathRef = useRef<string | null>(null);
   const isScrubbingRef = useRef<boolean>(false);
   const scrubTimeRef = useRef<number | null>(null);
+
+  // Webcam recording refs
+  const webcamStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
 
   // Track if initial load is complete
   const [isLibraryLoaded, setIsLibraryLoaded] = useState(false);
@@ -555,9 +561,30 @@ const App = () => {
   };
 
   /**
-   * Handle start recording - use FFmpeg with AVFoundation
+   * Handle recording mode change
+   */
+  const handleModeChange = (mode: "screen" | "webcam") => {
+    setRecordingState((prev) => ({
+      ...prev,
+      mode: mode,
+    }));
+  };
+
+  /**
+   * Handle start recording - delegates to screen or webcam based on mode
    */
   const handleStartPicking = async () => {
+    if (recordingState.mode === "screen") {
+      await handleStartScreenRecording();
+    } else {
+      await handleStartWebcamRecording();
+    }
+  };
+
+  /**
+   * Handle start screen recording
+   */
+  const handleStartScreenRecording = async () => {
     setRecordingState((prev) => ({
       ...prev,
       isPicking: true,
@@ -573,7 +600,7 @@ const App = () => {
         throw new Error("No displays available for recording");
       }
 
-      // Use the first display (main screen) - TODO: let user select
+      // Use the first display (main screen)
       const displayId = displays[0].id;
 
       // Generate output filename with timestamp
@@ -630,9 +657,103 @@ You can click "Open Settings" below to go directly to the settings page.`;
   };
 
   /**
-   * Handle stop recording
+   * Handle start webcam recording
+   */
+  const handleStartWebcamRecording = async () => {
+    setRecordingState((prev) => ({
+      ...prev,
+      isPicking: true,
+      isRecording: false,
+    }));
+    setRecordingError(null);
+
+    try {
+      // Check camera permission
+      const permissionStatus = await window.electronAPI.checkCameraPermission();
+
+      if (!permissionStatus.granted) {
+        // Request permission
+        const result = await window.electronAPI.requestCameraPermission();
+        if (!result.granted) {
+          throw new Error("Camera permission denied");
+        }
+      }
+
+      // Get webcam stream
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
+
+      webcamStreamRef.current = stream;
+      recordedChunksRef.current = [];
+
+      // Create MediaRecorder
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: "video/webm;codecs=vp8,opus",
+      });
+
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.start(1000); // Collect data every second
+
+      setRecordingState((prev) => ({
+        ...prev,
+        isRecording: true,
+        isPicking: false,
+        startTime: Date.now(),
+        elapsedTime: 0,
+      }));
+    } catch (err) {
+      console.error("[webcam] Failed to start recording:", err);
+
+      let errorMessage = "Unable to start webcam recording.";
+
+      if (err instanceof Error) {
+        if (err.message.includes("permission") || err.message.includes("denied")) {
+          errorMessage = `Camera permission required.
+
+Please ensure:
+1. System Settings > Privacy & Security > Camera
+2. Enable permission for this app
+3. Completely quit and restart this app
+
+You can click "Open Settings" below to go directly to the settings page.`;
+        } else {
+          errorMessage = `Error: ${err.message}`;
+        }
+      }
+
+      setRecordingError(errorMessage);
+      setRecordingState((prev) => ({
+        ...prev,
+        isPicking: false,
+        isRecording: false,
+      }));
+    }
+  };
+
+  /**
+   * Handle stop recording - delegates based on mode
    */
   const handleStopRecording = async () => {
+    if (recordingState.mode === "screen") {
+      await handleStopScreenRecording();
+    } else {
+      await handleStopWebcamRecording();
+    }
+  };
+
+  /**
+   * Handle stop screen recording
+   */
+  const handleStopScreenRecording = async () => {
     try {
       // Set to "saving" state
       setRecordingState((prev) => ({
@@ -648,6 +769,74 @@ You can click "Open Settings" below to go directly to the settings page.`;
       await handleRecordingStopped();
     } catch (err) {
       console.error("[screencapture] Failed to stop recording:", err);
+      setRecordingError(
+        err instanceof Error ? err.message : "Failed to stop recording",
+      );
+      setRecordingState((prev) => ({
+        ...prev,
+        isSaving: false,
+      }));
+    }
+  };
+
+  /**
+   * Handle stop webcam recording
+   */
+  const handleStopWebcamRecording = async () => {
+    try {
+      // Set to "saving" state
+      setRecordingState((prev) => ({
+        ...prev,
+        isRecording: false,
+        isSaving: true,
+      }));
+
+      // Stop media recorder
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+
+        // Wait for final data
+        await new Promise<void>((resolve) => {
+          mediaRecorderRef.current!.onstop = () => resolve();
+        });
+      }
+
+      // Stop webcam stream
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((track) => track.stop());
+        webcamStreamRef.current = null;
+      }
+
+      // Create blob from recorded chunks
+      const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+
+      // Generate filename
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/:/g, "-")
+        .replace(/\..+/, "");
+      const filename = `webcam_${timestamp}.webm`;
+
+      // Convert blob to ArrayBuffer
+      const arrayBuffer = await blob.arrayBuffer();
+
+      // Save recording
+      const webmPath = await window.electronAPI.saveRecording(arrayBuffer, filename);
+      console.log("[webcam] Saved recording:", webmPath);
+
+      // Convert to MOV for consistency
+      const movPath = await window.electronAPI.convertWebmToMov(webmPath);
+      console.log("[webcam] Converted to MOV:", movPath);
+
+      recordingOutputPathRef.current = movPath;
+
+      // Import to library
+      await handleRecordingStopped();
+
+      // Cleanup
+      recordedChunksRef.current = [];
+    } catch (err) {
+      console.error("[webcam] Failed to stop recording:", err);
       setRecordingError(
         err instanceof Error ? err.message : "Failed to stop recording",
       );
@@ -804,6 +993,8 @@ You can click "Open Settings" below to go directly to the settings page.`;
               onStopRecording={handleStopRecording}
               recordingError={recordingError}
               onOpenSettings={handleOpenSettings}
+              recordingMode={recordingState.mode}
+              onModeChange={handleModeChange}
             />
           </div>
 

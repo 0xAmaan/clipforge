@@ -656,6 +656,39 @@ ipcMain.handle(
   },
 );
 
+// Handler: Convert WebM to MOV using FFmpeg
+ipcMain.handle("convert-webm-to-mov", async (event, webmPath: string) => {
+  return new Promise((resolve, reject) => {
+    if (!ffmpegPath) {
+      reject(new Error("FFmpeg not available for conversion"));
+      return;
+    }
+
+    const movPath = webmPath.replace(/\.webm$/, ".mov");
+
+    console.log("[FFmpeg] Converting WebM to MOV:", webmPath, "->", movPath);
+
+    ffmpeg(webmPath)
+      .videoCodec("libx264")
+      .audioCodec("aac")
+      .outputOptions(["-movflags", "+faststart"])
+      .output(movPath)
+      .on("end", () => {
+        console.log("[FFmpeg] Conversion complete:", movPath);
+        // Delete the original webm file
+        fs.promises.unlink(webmPath).catch((err) => {
+          console.warn("[FFmpeg] Could not delete temp webm:", err);
+        });
+        resolve(movPath);
+      })
+      .on("error", (err) => {
+        console.error("[FFmpeg] Conversion error:", err);
+        reject(err);
+      })
+      .run();
+  });
+});
+
 // screencapture recording process reference
 let screencaptureRecordingProcess: ChildProcess | null = null;
 

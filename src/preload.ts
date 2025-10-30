@@ -61,6 +61,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   checkCameraPermission: () => ipcRenderer.invoke("check-camera-permission"),
   requestCameraPermission: () =>
     ipcRenderer.invoke("request-camera-permission"),
+  convertWebmToMov: (webmPath: string) =>
+    ipcRenderer.invoke("convert-webm-to-mov", webmPath),
 
   // screencapture recording
   getAVFoundationDisplays: () =>

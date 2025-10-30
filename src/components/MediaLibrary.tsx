@@ -23,6 +23,8 @@ export const MediaLibrary = ({
   onStopRecording,
   recordingError,
   onOpenSettings,
+  recordingMode,
+  onModeChange,
 }: MediaLibraryProps & {
   isRecording?: boolean;
   isPicking?: boolean;
@@ -32,6 +34,8 @@ export const MediaLibrary = ({
   onStopRecording?: () => void;
   recordingError?: string | null;
   onOpenSettings?: () => void;
+  recordingMode?: "screen" | "webcam";
+  onModeChange?: (mode: "screen" | "webcam") => void;
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [showRecordingPopup, setShowRecordingPopup] = useState(false);
@@ -146,6 +150,35 @@ export const MediaLibrary = ({
 
                   {!isRecording && !isSaving ? (
                     <div className="space-y-3">
+                      {/* Mode selector */}
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold text-gray-300">Recording Mode</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => onModeChange && onModeChange("screen")}
+                            className={cn(
+                              "px-3 py-2 rounded text-sm font-semibold transition-colors cursor-pointer",
+                              recordingMode === "screen"
+                                ? "bg-accent text-white"
+                                : "bg-background text-gray-400 hover:bg-background/80"
+                            )}
+                          >
+                            🖥️ Screen
+                          </button>
+                          <button
+                            onClick={() => onModeChange && onModeChange("webcam")}
+                            className={cn(
+                              "px-3 py-2 rounded text-sm font-semibold transition-colors cursor-pointer",
+                              recordingMode === "webcam"
+                                ? "bg-accent text-white"
+                                : "bg-background text-gray-400 hover:bg-background/80"
+                            )}
+                          >
+                            📹 Webcam
+                          </button>
+                        </div>
+                      </div>
+
                       <button
                         onClick={() => {
                           onStartPicking();
@@ -158,8 +191,8 @@ export const MediaLibrary = ({
                       >
                         {isPicking ? "Starting..." : "Start Recording"}
                       </button>
-                      <p className="text-xs text-gray-400 italic">
-                        Click to select a screen or window to capture
+                      <p className="text-xs text-gray-400 italic text-center">
+                        {recordingMode === "screen" ? "Record your screen" : "Record from webcam"}
                       </p>
                     </div>
                   ) : isSaving ? (

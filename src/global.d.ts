@@ -43,6 +43,7 @@ declare global {
         granted: boolean;
         platform: string;
       }>;
+      convertWebmToMov: (webmPath: string) => Promise<string>;
 
       // screencapture recording
       getAVFoundationDisplays: () => Promise<AVFoundationDisplay[]>;

@@ -53,6 +53,8 @@ export interface ScreenSource {
   type: "screen" | "window";
 }
 
+export type RecordingMode = "screen" | "webcam";
+
 export interface RecordingState {
   isRecording: boolean;
   isPicking: boolean;
@@ -60,6 +62,7 @@ export interface RecordingState {
   selectedSource: ScreenSource | null;
   startTime: number | null;
   elapsedTime: number;
+  mode: RecordingMode;
 }
 
 // Multi-clip timeline types
