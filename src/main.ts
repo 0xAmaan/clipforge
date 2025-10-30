@@ -15,28 +15,66 @@ import { spawn, ChildProcess } from "node:child_process";
 import started from "electron-squirrel-startup";
 import ffmpeg from "fluent-ffmpeg";
 
-// Set FFmpeg binary path with proper resolution
-// Use dynamic require to avoid Vite bundling issues
+// Set FFmpeg and FFprobe binary paths with proper resolution
 let ffmpegPath: string | null = null;
+let ffprobePath: string | null = null;
 
 try {
-  // In development, use the direct import
-  if (process.env.NODE_ENV !== "production") {
-    const ffmpegStatic = require("ffmpeg-static");
-    ffmpegPath = ffmpegStatic;
+  console.log("[FFmpeg Setup] Is production:", app.isPackaged);
+
+  if (app.isPackaged) {
+    // In production, use binaries from the Resources/bin directory
+    const resourcesPath = process.resourcesPath;
+    ffmpegPath = path.join(resourcesPath, "bin", "ffmpeg");
+    ffprobePath = path.join(resourcesPath, "bin", "ffprobe");
+    console.log("[FFmpeg Setup] Production mode - using bundled binaries");
   } else {
-    // In production, resolve from node_modules
+    // In development, use the npm packages
     const ffmpegStatic = require("ffmpeg-static");
-    ffmpegPath = ffmpegStatic?.replace("app.asar", "app.asar.unpacked");
+    const ffprobeStatic = require("ffprobe-static");
+    ffmpegPath = ffmpegStatic;
+    ffprobePath = ffprobeStatic.path;
+    console.log("[FFmpeg Setup] Development mode - using npm packages");
   }
 
+  console.log("[FFmpeg Setup] FFmpeg path:", ffmpegPath);
+  console.log("[FFmpeg Setup] FFprobe path:", ffprobePath);
+
+  // Verify files exist and set paths
   if (ffmpegPath) {
-    ffmpeg.setFfmpegPath(ffmpegPath);
+    const ffmpegExists = fs.existsSync(ffmpegPath);
+    console.log("[FFmpeg Setup] FFmpeg exists:", ffmpegExists);
+    if (ffmpegExists) {
+      ffmpeg.setFfmpegPath(ffmpegPath);
+    } else {
+      console.error(
+        "[FFmpeg Setup] FFmpeg binary not found at path:",
+        ffmpegPath,
+      );
+    }
   } else {
-    console.error("FFmpeg binary not found!");
+    console.error("[FFmpeg Setup] FFmpeg path is null!");
+  }
+
+  if (ffprobePath) {
+    const ffprobeExists = fs.existsSync(ffprobePath);
+    console.log("[FFmpeg Setup] FFprobe exists:", ffprobeExists);
+    if (ffprobeExists) {
+      ffmpeg.setFfprobePath(ffprobePath);
+    } else {
+      console.error(
+        "[FFmpeg Setup] FFprobe binary not found at path:",
+        ffprobePath,
+      );
+    }
+  } else {
+    console.error("[FFmpeg Setup] FFprobe path is null!");
   }
 } catch (error) {
-  console.error("Failed to load ffmpeg-static:", error);
+  console.error(
+    "[FFmpeg Setup] Failed to load ffmpeg-static or ffprobe-static:",
+    error,
+  );
 }
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
@@ -271,12 +309,21 @@ ipcMain.handle("save-file", async (event, defaultPath: string) => {
 // Handler: Get video metadata
 ipcMain.handle("get-video-metadata", async (event, filePath: string) => {
   return new Promise((resolve, reject) => {
+    console.log("[get-video-metadata] Called with file:", filePath);
+    console.log("[get-video-metadata] File exists:", fs.existsSync(filePath));
+    console.log("[get-video-metadata] ffprobePath configured:", ffprobePath);
+
     // For WebM files, we need to probe more thoroughly
     const probeOptions = ["-v", "error", "-show_format", "-show_streams"];
 
     ffmpeg.ffprobe(filePath, probeOptions, (err, metadata) => {
       if (err) {
-        console.error("FFprobe error:", err);
+        console.error("[get-video-metadata] FFprobe error:", err);
+        console.error("[get-video-metadata] Error details:", {
+          message: err.message,
+          stack: err.stack,
+          code: (err as any).code,
+        });
         reject(err);
         return;
       }
@@ -822,6 +869,45 @@ const parseFFmpegExitCode = (
   return `FFmpeg recording failed with exit code ${code}. Error: ${errorOutput.slice(-300)}`;
 };
 
+// Handler: List available audio devices for debugging
+ipcMain.handle("list-audio-devices", async () => {
+  return new Promise((resolve, reject) => {
+    if (!ffmpegPath) {
+      reject(new Error("FFmpeg not available"));
+      return;
+    }
+
+    console.log("[Audio Devices] Listing available audio devices...");
+
+    // List AVFoundation devices
+    const listProcess = spawn(ffmpegPath, [
+      "-f",
+      "avfoundation",
+      "-list_devices",
+      "true",
+      "-i",
+      "",
+    ]);
+
+    let stderrOutput = "";
+
+    listProcess.stderr?.on("data", (data) => {
+      stderrOutput += data.toString();
+    });
+
+    listProcess.on("close", () => {
+      console.log("[Audio Devices] Available devices:");
+      console.log(stderrOutput);
+      resolve(stderrOutput);
+    });
+
+    listProcess.on("error", (error) => {
+      console.error("[Audio Devices] Error listing devices:", error);
+      reject(error);
+    });
+  });
+});
+
 // Handler: Get available displays for screencapture
 ipcMain.handle("get-avfoundation-displays", async () => {
   return new Promise((resolve, reject) => {
@@ -894,30 +980,25 @@ ipcMain.handle("get-avfoundation-displays", async () => {
   });
 });
 
+// Audio recording process reference
+let audioRecordingProcess: ChildProcess | null = null;
+let tempAudioPath: string | null = null;
+
 // Helper: Attempt to start screencapture recording
 const attemptRecording = (
   displayId: string,
   outputPath: string,
   withAudio: boolean,
 ): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    // screencapture command for video recording
-    // Format: screencapture -v -g -x -D <displayId> output.mov
+  return new Promise(async (resolve, reject) => {
+    // screencapture command for video recording (NO audio - we'll handle that separately)
     const args = [
       "-v", // Video recording mode (continuous until killed)
       "-x", // Do not play sounds (prevents interactive prompt blocking)
+      "-D", // Specify display
+      displayId,
+      outputPath,
     ];
-
-    // Add audio if requested (microphone only via default input)
-    if (withAudio) {
-      args.push("-g"); // -g captures audio using default input (microphone)
-    }
-
-    // Specify display
-    args.push("-D", displayId);
-
-    // Output file (screencapture creates .mov files)
-    args.push(outputPath);
 
     screencaptureRecordingProcess = spawn("screencapture", args);
 
@@ -950,6 +1031,89 @@ const attemptRecording = (
         reject(new Error(errorOutput || "screencapture failed to start"));
       }
     });
+
+    // If audio is requested, start separate audio recording with ffmpeg
+    let shouldRecordAudio = !!(withAudio && ffmpegPath);
+
+    if (shouldRecordAudio) {
+      // Check microphone permission on macOS
+      if (process.platform === "darwin") {
+        const micStatus = systemPreferences.getMediaAccessStatus("microphone");
+        console.log("[Audio] Microphone permission status:", micStatus);
+
+        if (micStatus !== "granted") {
+          console.log("[Audio] Requesting microphone permission...");
+          const granted =
+            await systemPreferences.askForMediaAccess("microphone");
+          console.log("[Audio] Microphone permission granted:", granted);
+
+          if (!granted) {
+            console.error(
+              "[Audio] Microphone permission denied - will record without audio",
+            );
+            shouldRecordAudio = false; // Disable audio recording but continue with video
+          }
+        }
+      }
+    }
+
+    if (shouldRecordAudio && ffmpegPath) {
+      const audioDir = path.dirname(outputPath);
+      const audioFilename = `temp_audio_${Date.now()}.wav`;
+      tempAudioPath = path.join(audioDir, audioFilename);
+
+      console.log(
+        "[Audio] Starting microphone capture with ffmpeg:",
+        tempAudioPath,
+      );
+      console.log("[Audio] FFmpeg path:", ffmpegPath);
+      console.log("[Audio] Is packaged:", app.isPackaged);
+
+      // Use ffmpeg to capture audio from default microphone
+      // -f avfoundation: use AVFoundation (macOS)
+      // -i ":0": audio device 0 (default microphone)
+      const ffmpegArgs = [
+        "-f",
+        "avfoundation",
+        "-i",
+        ":0", // ":0" means audio device 0 (default microphone)
+        "-acodec",
+        "pcm_s16le", // Uncompressed audio for later merging
+        "-y", // Overwrite if exists
+        tempAudioPath,
+      ];
+
+      console.log("[Audio] FFmpeg command:", ffmpegPath, ffmpegArgs.join(" "));
+
+      audioRecordingProcess = spawn(ffmpegPath, ffmpegArgs);
+
+      let stderrOutput = "";
+
+      audioRecordingProcess.stdout?.on("data", (data) => {
+        console.log("[Audio] FFmpeg stdout:", data.toString());
+      });
+
+      audioRecordingProcess.stderr?.on("data", (data) => {
+        const output = data.toString();
+        stderrOutput += output;
+        console.log("[Audio] FFmpeg stderr:", output);
+      });
+
+      audioRecordingProcess.on("error", (error) => {
+        console.error("[Audio] FFmpeg process error:", error);
+        audioRecordingProcess = null;
+      });
+
+      audioRecordingProcess.on("close", (code) => {
+        if (code !== 0 && code !== null) {
+          console.error(
+            "[Audio] FFmpeg audio recording exited with code:",
+            code,
+          );
+          console.error("[Audio] Full stderr output:", stderrOutput);
+        }
+      });
+    }
 
     // screencapture doesn't create the file until recording stops
     // We validate by checking if the process is still running
@@ -996,29 +1160,156 @@ ipcMain.handle(
 
 // Handler: Stop screencapture recording
 ipcMain.handle("stop-ffmpeg-recording", async () => {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     if (!screencaptureRecordingProcess) {
       resolve(false);
       return;
     }
 
-    // Send SIGINT (Ctrl+C) to screencapture to gracefully stop
+    const videoPath = tempAudioPath
+      ? tempAudioPath.replace(/temp_audio_\d+\.wav$/, "temp_video.mov")
+      : null;
+
+    // Step 1: Stop audio recording first (if running)
+    if (audioRecordingProcess && tempAudioPath) {
+      console.log("[Audio] Stopping audio recording...");
+      audioRecordingProcess.stdin?.write("q"); // Tell ffmpeg to quit gracefully
+      audioRecordingProcess.kill("SIGINT");
+
+      // Wait for audio process to finish
+      await new Promise<void>((resolveAudio) => {
+        const timeout = setTimeout(() => {
+          if (audioRecordingProcess) {
+            audioRecordingProcess.kill("SIGKILL");
+          }
+          resolveAudio();
+        }, 2000);
+
+        audioRecordingProcess?.on("close", () => {
+          clearTimeout(timeout);
+          audioRecordingProcess = null;
+          console.log("[Audio] Audio recording stopped");
+          resolveAudio();
+        });
+      });
+    }
+
+    // Step 2: Stop video recording
+    console.log("[Video] Stopping video recording...");
     screencaptureRecordingProcess.kill("SIGINT");
 
-    // Wait for process to exit
-    screencaptureRecordingProcess.on("close", () => {
-      screencaptureRecordingProcess = null;
-      resolve(true);
+    // Wait for video process to exit
+    await new Promise<void>((resolveVideo) => {
+      const timeout = setTimeout(() => {
+        if (screencaptureRecordingProcess) {
+          screencaptureRecordingProcess.kill("SIGKILL");
+        }
+        screencaptureRecordingProcess = null;
+        resolveVideo();
+      }, 3000);
+
+      screencaptureRecordingProcess?.on("close", () => {
+        clearTimeout(timeout);
+        screencaptureRecordingProcess = null;
+        console.log("[Video] Video recording stopped");
+        resolveVideo();
+      });
     });
 
-    // Force kill if it doesn't stop within 3 seconds
-    setTimeout(() => {
-      if (screencaptureRecordingProcess) {
-        screencaptureRecordingProcess.kill("SIGKILL");
-        screencaptureRecordingProcess = null;
-        resolve(true);
+    // Step 3: If we have audio, merge it with video
+    if (tempAudioPath && ffmpegPath) {
+      try {
+        // The video file path was returned from attemptRecording
+        // We need to find it - it should be the last .mov file in the Videos folder
+        const videosPath = app.getPath("videos") || app.getPath("documents");
+        const files = fs.readdirSync(videosPath);
+        const movFiles = files
+          .filter((f) => f.endsWith(".mov") && f.startsWith("recording_"))
+          .sort()
+          .reverse();
+
+        if (movFiles.length > 0) {
+          const videoPath = path.join(videosPath, movFiles[0]);
+          const mergedPath = videoPath.replace(".mov", "_with_audio.mov");
+
+          console.log("[Merge] Merging video and audio...");
+          console.log("[Merge] Video:", videoPath);
+          console.log("[Merge] Audio:", tempAudioPath);
+          console.log("[Merge] Output:", mergedPath);
+
+          // Merge video and audio
+          await new Promise<void>((resolveMerge, rejectMerge) => {
+            const mergeProcess = spawn(ffmpegPath!, [
+              "-i",
+              videoPath, // Video input
+              "-i",
+              tempAudioPath!, // Audio input
+              "-c:v",
+              "copy", // Copy video stream (no re-encoding)
+              "-c:a",
+              "aac", // Encode audio to AAC
+              "-b:a",
+              "128k", // Audio bitrate
+              "-shortest", // Stop when shortest stream ends
+              "-y", // Overwrite output
+              mergedPath,
+            ]);
+
+            let errorOutput = "";
+
+            mergeProcess.stderr?.on("data", (data) => {
+              errorOutput += data.toString();
+            });
+
+            mergeProcess.on("error", (error) => {
+              console.error("[Merge] Error:", error);
+              rejectMerge(error);
+            });
+
+            mergeProcess.on("close", (code) => {
+              if (code === 0) {
+                console.log("[Merge] Successfully merged video and audio");
+
+                // Delete original video (without audio) and temp audio
+                fs.unlink(videoPath, (err) => {
+                  if (err)
+                    console.error(
+                      "[Merge] Error deleting original video:",
+                      err,
+                    );
+                });
+                fs.unlink(tempAudioPath!, (err) => {
+                  if (err)
+                    console.error("[Merge] Error deleting temp audio:", err);
+                });
+
+                // Rename merged file to original name
+                fs.rename(mergedPath, videoPath, (err) => {
+                  if (err) {
+                    console.error("[Merge] Error renaming merged file:", err);
+                    resolveMerge();
+                  } else {
+                    console.log("[Merge] Merged file renamed to:", videoPath);
+                    resolveMerge();
+                  }
+                });
+              } else {
+                console.error("[Merge] FFmpeg merge failed with code:", code);
+                console.error("[Merge] Error output:", errorOutput);
+                rejectMerge(new Error(`Merge failed: ${errorOutput}`));
+              }
+            });
+          });
+        }
+      } catch (error) {
+        console.error("[Merge] Failed to merge audio:", error);
+        // Continue anyway - video without audio is better than nothing
       }
-    }, 3000);
+
+      tempAudioPath = null; // Reset
+    }
+
+    resolve(true);
   });
 });
 
