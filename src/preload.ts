@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("save-recording", buffer, filename),
   openSystemSettings: () => ipcRenderer.invoke("open-system-settings"),
 
+  // Camera operations
+  checkCameraPermission: () => ipcRenderer.invoke("check-camera-permission"),
+  requestCameraPermission: () =>
+    ipcRenderer.invoke("request-camera-permission"),
+
   // screencapture recording
   getAVFoundationDisplays: () =>
     ipcRenderer.invoke("get-avfoundation-displays"),

@@ -217,8 +217,7 @@ const App = () => {
 
     // Check if we've reached the end of the current clip
     if (sourceTime >= currentClip.sourceEnd) {
-      // Find the next clip on the timeline (allowing for small floating point errors)
-      const currentClipEnd = currentClip.timelineStart + currentClip.duration;
+      // Find the next clip on the timeline
       const sortedClips = [...projectState.clips].sort(
         (a, b) => a.timelineStart - b.timelineStart,
       );
@@ -778,7 +777,9 @@ You can click "Open Settings" below to go directly to the settings page.`;
     isPlaying: projectState.isPlaying,
     hasClips: projectState.clips.length > 0,
     selectedClipId: projectState.selectedClipId,
+    currentTime: projectState.currentTime,
     onDeleteClip: handleClipDelete,
+    onSplitClip: handleSplitClip,
   });
 
   return (
@@ -850,7 +851,9 @@ You can click "Open Settings" below to go directly to the settings page.`;
               totalDuration={projectState.totalDuration}
               currentTime={projectState.currentTime}
               clips={projectState.clips}
-              onExportComplete={() => {}}
+              onExportComplete={(outputPath) => {
+                console.log("Export completed:", outputPath);
+              }}
             />
           </div>
         </div>

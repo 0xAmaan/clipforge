@@ -547,6 +547,59 @@ ipcMain.handle("check-screen-recording-permission", async () => {
   }
 });
 
+// Handler: Check camera permission status
+ipcMain.handle("check-camera-permission", async () => {
+  try {
+    if (process.platform === "darwin") {
+      const status = systemPreferences.getMediaAccessStatus("camera");
+      console.log("[Camera Permission] Status:", status);
+
+      return {
+        status: status,
+        platform: "darwin",
+        granted: status === "granted",
+        isDevelopment: process.env.NODE_ENV !== "production",
+      };
+    } else {
+      // On non-macOS platforms, assume granted (browser handles it)
+      return {
+        status: "not-applicable",
+        platform: process.platform,
+        granted: true,
+        isDevelopment: process.env.NODE_ENV !== "production",
+      };
+    }
+  } catch (error) {
+    console.error("[Camera Permission] Error checking permission:", error);
+    throw error;
+  }
+});
+
+// Handler: Request camera permission (macOS)
+ipcMain.handle("request-camera-permission", async () => {
+  try {
+    if (process.platform === "darwin") {
+      console.log("[Camera Permission] Requesting access...");
+      const granted = await systemPreferences.askForMediaAccess("camera");
+      console.log("[Camera Permission] Request result:", granted);
+
+      return {
+        granted: granted,
+        platform: "darwin",
+      };
+    } else {
+      // On non-macOS, browser will handle permission prompts
+      return {
+        granted: true,
+        platform: process.platform,
+      };
+    }
+  } catch (error) {
+    console.error("[Camera Permission] Error requesting permission:", error);
+    throw error;
+  }
+});
+
 // Handler: Get available screen sources for recording
 ipcMain.handle("get-screen-sources", async () => {
   try {

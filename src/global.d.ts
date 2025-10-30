@@ -37,6 +37,13 @@ declare global {
       saveRecording: (buffer: ArrayBuffer, filename: string) => Promise<string>;
       openSystemSettings: () => Promise<void>;
 
+      // Camera operations
+      checkCameraPermission: () => Promise<PermissionStatus>;
+      requestCameraPermission: () => Promise<{
+        granted: boolean;
+        platform: string;
+      }>;
+
       // screencapture recording
       getAVFoundationDisplays: () => Promise<AVFoundationDisplay[]>;
       startFFmpegRecording: (
