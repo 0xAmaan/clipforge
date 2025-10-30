@@ -89,8 +89,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       }
     };
 
-    // Track the last clip ID to detect when we switch clips (even if same file)
-    const lastClipIdRef = useRef<string | null>(null);
+    // Track the last video path to detect when we switch to a different file
+    const lastVideoPathRef = useRef<string | null>(null);
     const isPlayingRef = useRef<boolean>(false);
 
     // Keep isPlaying ref in sync
@@ -98,7 +98,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       isPlayingRef.current = isPlaying || false;
     }, [isPlaying]);
 
-    // Update video source when videoPath or clipId changes
+    // Update video source when videoPath changes (but not for clip transitions within same file)
     useEffect(() => {
       if (videoRef.current && videoPath) {
         // Convert file path to file:// URL
@@ -106,16 +106,22 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           ? videoPath
           : `file://${videoPath}`;
 
-        // Check if we're switching to a different clip
-        const isNewClip = clipId !== lastClipIdRef.current;
-        const isSameFile = videoRef.current.src === videoUrl;
+        // Check if we're switching to a different file
+        const isSameFile = lastVideoPathRef.current === videoPath;
 
-        // Skip reload only if it's the same file AND same clip
-        if (isSameFile && !isNewClip) {
+        // Only reload if the source file actually changed
+        if (isSameFile) {
+          // Same file, just seek to the new time (handled by currentTime effect)
+          // But make sure playback continues if it was playing
+          if (isPlayingRef.current && videoRef.current.paused) {
+            videoRef.current.play().catch(err => {
+              console.error('Resume play failed:', err);
+            });
+          }
           return;
         }
 
-        lastClipIdRef.current = clipId || null;
+        lastVideoPathRef.current = videoPath;
 
         videoRef.current.src = videoUrl;
         videoRef.current.load(); // Explicitly load the new source
@@ -136,12 +142,19 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           console.error('Video error message:', videoRef.current?.error?.message);
         };
       }
-    }, [videoPath, clipId]);
+    }, [videoPath]);
 
-    // Seek to currentTime when it's updated externally (e.g., from timeline)
+    // Seek to currentTime when it's updated externally (e.g., from timeline or clip transitions)
     useEffect(() => {
       if (videoRef.current && Math.abs(videoRef.current.currentTime - currentTime) > 0.5) {
         videoRef.current.currentTime = currentTime;
+        
+        // Resume playback if it should be playing (important for clip transitions)
+        if (isPlayingRef.current && videoRef.current.paused) {
+          videoRef.current.play().catch(err => {
+            console.error('Resume play after seek failed:', err);
+          });
+        }
       }
     }, [currentTime]);
 

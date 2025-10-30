@@ -52,6 +52,7 @@ const App = () => {
 
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const [scrubDisplayTime, setScrubDisplayTime] = useState<number | null>(null);
+  const [scrubClipId, setScrubClipId] = useState<string | null>(null);
 
   const videoPlayerRef = useRef<VideoPlayerHandle>(null);
   const timerIntervalRef = useRef<number | null>(null);
@@ -236,11 +237,26 @@ const App = () => {
           : null;
 
       if (nextClip) {
-        // Transition to the next clip
-        setProjectState((prev) => ({
-          ...prev,
-          currentTime: nextClip.timelineStart,
-        }));
+        // Transition to the next clip - preserve playing state
+        setProjectState((prev) => {
+          const wasPlaying = prev.isPlaying;
+          
+          // Ensure video player continues if it was playing
+          if (wasPlaying && videoPlayerRef.current) {
+            // Use requestAnimationFrame to ensure state has updated
+            requestAnimationFrame(() => {
+              if (videoPlayerRef.current) {
+                videoPlayerRef.current.play();
+              }
+            });
+          }
+          
+          return {
+            ...prev,
+            currentTime: nextClip.timelineStart,
+            isPlaying: wasPlaying, // Explicitly preserve playing state
+          };
+        });
       } else {
         // No more clips, stop playback at the end
         setProjectState((prev) => ({
@@ -280,6 +296,7 @@ const App = () => {
     isScrubbingRef.current = false;
     scrubTimeRef.current = null;
     setScrubDisplayTime(null);
+    setScrubClipId(null);
 
     setProjectState((prev) => ({
       ...prev,
@@ -308,6 +325,7 @@ const App = () => {
         isScrubbingRef.current = true; // Set flag to prevent state updates
         scrubTimeRef.current = timelineTime; // Store scrub time for display
         setScrubDisplayTime(timelineTime); // Update display time state
+        setScrubClipId(clipAtTime.id); // Track which clip we're scrubbing
         const sourceTime = getSourceTimeForClip(clipAtTime, timelineTime);
         videoPlayerRef.current.seek(sourceTime);
       }
@@ -321,6 +339,7 @@ const App = () => {
     isScrubbingRef.current = false; // Clear scrubbing flag
     scrubTimeRef.current = null; // Clear scrub time
     setScrubDisplayTime(null); // Clear display time
+    setScrubClipId(null); // Clear scrub clip
   };
 
   /**
@@ -408,6 +427,12 @@ const App = () => {
    * Handle clip splitting at playhead position
    */
   const handleSplitClip = (timelineTime: number) => {
+    const clipToSplit = getClipAtTime(projectState.clips, timelineTime);
+    if (!clipToSplit) {
+      console.warn("No clip found at timeline time:", timelineTime);
+      return;
+    }
+
     const updatedClips = splitClip(projectState.clips, timelineTime);
 
     // If split failed (no clip at position or too close to edge), do nothing
@@ -418,11 +443,68 @@ const App = () => {
 
     const newTotalDuration = calculateTotalDuration(updatedClips);
 
+    // Mark the new clips as loading thumbnails
+    const clipsWithLoadingState = updatedClips.map((clip) => {
+      // Only mark clips that don't have thumbnails as loading
+      if (!clip.thumbnails && clip.sourceFilePath === clipToSplit.sourceFilePath) {
+        return { ...clip, thumbnailsLoading: true };
+      }
+      return clip;
+    });
+
     setProjectState((prev) => ({
       ...prev,
-      clips: updatedClips,
+      clips: clipsWithLoadingState,
       totalDuration: newTotalDuration,
     }));
+
+    // Generate thumbnails for the new clips asynchronously
+    const newClipsToGenerate = updatedClips.filter(
+      (clip) =>
+        !clip.thumbnails && clip.sourceFilePath === clipToSplit.sourceFilePath
+    );
+
+    newClipsToGenerate.forEach((clip) => {
+      console.log("🎬 Generating thumbnails for split clip:", clip.id, {
+        filePath: clip.sourceFilePath,
+        sourceStart: clip.sourceStart,
+        sourceEnd: clip.sourceEnd,
+      });
+
+      window.electronAPI
+        .generateClipThumbnails(
+          clip.sourceFilePath,
+          clip.id,
+          clip.sourceStart,
+          clip.sourceEnd,
+          5.0, // 1 frame every 5 seconds
+        )
+        .then((thumbnails) => {
+          console.log("✅ Thumbnails generated for split clip:", thumbnails.length, "frames");
+
+          // Update clip with generated thumbnails
+          setProjectState((prev) => ({
+            ...prev,
+            clips: prev.clips.map((c) =>
+              c.id === clip.id
+                ? { ...c, thumbnails, thumbnailsLoading: false }
+                : c
+            ),
+          }));
+        })
+        .catch((err) => {
+          console.error("❌ Failed to generate thumbnails for split clip:", err);
+          // Clear loading state even on error
+          setProjectState((prev) => ({
+            ...prev,
+            clips: prev.clips.map((c) =>
+              c.id === clip.id
+                ? { ...c, thumbnailsLoading: false }
+                : c
+            ),
+          }));
+        });
+    });
   };
 
   /**
@@ -1206,6 +1288,11 @@ You can click "Open Settings" below to go directly to the settings page.`;
     projectState.currentTime,
   );
 
+  // Get the clip to display in the video player (scrub clip takes priority during scrubbing)
+  const displayClip = scrubClipId
+    ? projectState.clips.find(c => c.id === scrubClipId) || currentClip
+    : currentClip;
+
   // Calculate the source video time within the current clip
   const getSourceTimeForClip = (
     clip: Clip | null,
@@ -1264,18 +1351,18 @@ You can click "Open Settings" below to go directly to the settings page.`;
               </div>
             )}
 
-            {projectState.clips.length > 0 && currentClip ? (
+            {projectState.clips.length > 0 && displayClip ? (
               <VideoPlayer
                 ref={videoPlayerRef}
-                videoPath={currentClip.sourceFilePath}
-                clipId={currentClip.id}
+                videoPath={displayClip.sourceFilePath}
+                clipId={displayClip.id}
                 currentTime={getSourceTimeForClip(
-                  currentClip,
-                  projectState.currentTime,
+                  displayClip,
+                  scrubDisplayTime ?? projectState.currentTime,
                 )}
                 displayTime={scrubDisplayTime ?? projectState.currentTime}
-                trimStart={currentClip.sourceStart}
-                trimEnd={currentClip.sourceEnd}
+                trimStart={displayClip.sourceStart}
+                trimEnd={displayClip.sourceEnd}
                 totalDuration={projectState.totalDuration}
                 isPlaying={projectState.isPlaying}
                 onTimeUpdate={handleTimeUpdate}
