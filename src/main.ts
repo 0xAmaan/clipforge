@@ -933,6 +933,131 @@ ipcMain.handle("generate-thumbnail", async (event, videoPath: string) => {
   });
 });
 
+/**
+ * Generate a consistent hash from a file path for thumbnail caching
+ * This ensures thumbnails are reused for the same video file
+ */
+const getFileHash = (filePath: string): string => {
+  return Buffer.from(filePath)
+    .toString("base64")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .substring(0, 40);
+};
+
+// Handler: Generate multiple thumbnails for timeline clip preview
+ipcMain.handle(
+  "generate-clip-thumbnails",
+  async (
+    event,
+    videoPath: string,
+    clipId: string,
+    sourceStart: number,
+    sourceEnd: number,
+    frameInterval: number = 1.0,
+  ) => {
+    try {
+      // Create thumbnails directory if it doesn't exist
+      const thumbsDir = path.join(app.getPath("temp"), "clipforge-thumbs");
+      if (!fs.existsSync(thumbsDir)) {
+        fs.mkdirSync(thumbsDir, { recursive: true });
+      }
+
+      // Calculate timestamps for frame extraction
+      const timestamps: number[] = [];
+      for (let time = sourceStart; time < sourceEnd; time += frameInterval) {
+        timestamps.push(time);
+      }
+      // Always include the last frame (but clamp to 0.1s before end to avoid edge cases)
+      const lastFrameTime = Math.max(sourceStart, sourceEnd - 0.1);
+      if (
+        timestamps.length === 0 ||
+        timestamps[timestamps.length - 1] < lastFrameTime - 0.5
+      ) {
+        timestamps.push(lastFrameTime);
+      }
+
+      // Generate file hash for consistent caching across clip instances
+      const fileHash = getFileHash(videoPath);
+
+      // Generate thumbnails for each timestamp
+      const thumbnails: Array<{ timestamp: number; path: string }> = [];
+
+      for (const timestamp of timestamps) {
+        const thumbnailPath = path.join(
+          thumbsDir,
+          `clip_${fileHash}_frame_${timestamp.toFixed(2)}.png`,
+        );
+
+        // Check if thumbnail already exists (caching)
+        if (fs.existsSync(thumbnailPath)) {
+          thumbnails.push({ timestamp, path: thumbnailPath });
+          continue;
+        }
+
+        // Generate new thumbnail
+        await new Promise<void>((resolve, reject) => {
+          ffmpeg(videoPath)
+            .seekInput(timestamp) // Seek to specific timestamp
+            .frames(1) // Extract 1 frame
+            .size("160x?") // Width 160px, maintain aspect ratio (smaller for performance)
+            .output(thumbnailPath)
+            .on("end", () => {
+              thumbnails.push({ timestamp, path: thumbnailPath });
+              resolve();
+            })
+            .on("error", (err) => {
+              console.error(
+                `Thumbnail generation error at ${timestamp}s:`,
+                err,
+              );
+              reject(err);
+            })
+            .run();
+        });
+      }
+
+      return thumbnails;
+    } catch (error) {
+      console.error("Error generating clip thumbnails:", error);
+      return []; // Return empty array on error (graceful fallback)
+    }
+  },
+);
+
+// Handler: Clean up clip thumbnails
+ipcMain.handle("cleanup-clip-thumbnails", async (event, videoPath: string) => {
+  try {
+    const thumbsDir = path.join(app.getPath("temp"), "clipforge-thumbs");
+    if (!fs.existsSync(thumbsDir)) {
+      return true;
+    }
+
+    // Generate file hash to find thumbnails for this video file
+    const fileHash = getFileHash(videoPath);
+
+    // Find all thumbnails for this video file
+    const files = await fs.promises.readdir(thumbsDir);
+    const clipThumbs = files.filter((file) =>
+      file.startsWith(`clip_${fileHash}_`),
+    );
+
+    // Delete each thumbnail
+    for (const file of clipThumbs) {
+      const filePath = path.join(thumbsDir, file);
+      try {
+        await fs.promises.unlink(filePath);
+      } catch (err) {
+        console.error(`Failed to delete thumbnail ${file}:`, err);
+      }
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error cleaning up clip thumbnails:", error);
+    return false;
+  }
+});
+
 // Handler: Get file size
 ipcMain.handle("get-file-size", async (event, filePath: string) => {
   try {

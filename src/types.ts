@@ -20,8 +20,10 @@ export interface VideoState {
 export interface VideoPlayerProps {
   videoPath: string | null;
   currentTime: number;
+  displayTime?: number; // Timeline time to display in UI (used during scrubbing)
   trimStart: number;
   trimEnd: number;
+  totalDuration?: number; // Total timeline duration for display
   onTimeUpdate: (time: number) => void;
   onPlayPause: (isPlaying: boolean) => void;
 }
@@ -67,6 +69,11 @@ export interface Clip {
   timelineStart: number; // Position on timeline where clip starts (seconds)
   duration: number; // Calculated: sourceEnd - sourceStart
   sourceMetadata?: VideoMetadata; // Cached metadata for source file
+  thumbnails?: Array<{
+    timestamp: number; // Timestamp in source video (seconds)
+    path: string; // File path to thumbnail image
+  }>;
+  thumbnailsLoading?: boolean; // Whether thumbnails are currently being generated
 }
 
 export interface ProjectState {
@@ -92,6 +99,7 @@ export interface MultiClipTimelineProps {
   ) => void;
   onSeek: (time: number) => void;
   onScrub?: (time: number) => void; // Called during hover scrubbing for preview
+  onScrubEnd?: () => void; // Called when scrubbing ends (mouse leaves timeline)
 }
 
 export interface ClipItemProps {

@@ -21,6 +21,7 @@ import {
   removeClip,
   updateClipTrim,
 } from "./utils/clipManagement";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 const App = () => {
   // Multi-clip project state
@@ -47,12 +48,15 @@ const App = () => {
   });
 
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [scrubDisplayTime, setScrubDisplayTime] = useState<number | null>(null);
 
   const videoPlayerRef = useRef<VideoPlayerHandle>(null);
   const timerIntervalRef = useRef<number | null>(null);
   const recordingStartTimeRef = useRef<number | null>(null);
   const elapsedTimeRef = useRef<number>(0);
   const recordingOutputPathRef = useRef<string | null>(null);
+  const isScrubbingRef = useRef<boolean>(false);
+  const scrubTimeRef = useRef<number | null>(null);
 
   // Track if initial load is complete
   const [isLibraryLoaded, setIsLibraryLoaded] = useState(false);
@@ -209,6 +213,11 @@ const App = () => {
    * Note: time parameter is the source video time, need to convert to timeline time
    */
   const handleTimeUpdate = (sourceTime: number) => {
+    // Don't update state if we're currently scrubbing (preview only)
+    if (isScrubbingRef.current) {
+      return;
+    }
+
     const currentClip = getClipAtTime(projectState.clips, projectState.currentTime);
 
     if (!currentClip) return;
@@ -265,6 +274,11 @@ const App = () => {
    * Note: time parameter is timeline time, need to convert to source time for the clip
    */
   const handleSeek = (timelineTime: number) => {
+    // Clear scrubbing state when seeking
+    isScrubbingRef.current = false;
+    scrubTimeRef.current = null;
+    setScrubDisplayTime(null);
+
     setProjectState((prev) => ({
       ...prev,
       currentTime: timelineTime,
@@ -289,10 +303,22 @@ const App = () => {
     if (!projectState.isPlaying && videoPlayerRef.current) {
       const clipAtTime = getClipAtTime(projectState.clips, timelineTime);
       if (clipAtTime) {
+        isScrubbingRef.current = true; // Set flag to prevent state updates
+        scrubTimeRef.current = timelineTime; // Store scrub time for display
+        setScrubDisplayTime(timelineTime); // Update display time state
         const sourceTime = getSourceTimeForClip(clipAtTime, timelineTime);
         videoPlayerRef.current.seek(sourceTime);
       }
     }
+  };
+
+  /**
+   * Handle when scrubbing ends (mouse leaves timeline)
+   */
+  const handleScrubEnd = () => {
+    isScrubbingRef.current = false; // Clear scrubbing flag
+    scrubTimeRef.current = null; // Clear scrub time
+    setScrubDisplayTime(null); // Clear display time
   };
 
   /**
@@ -356,6 +382,9 @@ const App = () => {
       selectedClipId:
         prev.selectedClipId === clipId ? null : prev.selectedClipId,
     }));
+
+    // Note: Thumbnails are NOT cleaned up here - they persist when clip is removed from timeline
+    // Thumbnails are only cleaned up when the video is removed from the library entirely
   };
 
   /**
@@ -374,6 +403,10 @@ const App = () => {
         videoMetadata,
         projectState.totalDuration,
       );
+
+      // Mark thumbnails as loading
+      newClip.thumbnailsLoading = true;
+
       const updatedClips = addClip(projectState.clips, newClip);
       const newTotalDuration = calculateTotalDuration(updatedClips);
 
@@ -384,6 +417,48 @@ const App = () => {
         totalDuration: newTotalDuration,
         selectedClipId: newClip.id,
       });
+
+      // Generate thumbnails asynchronously (don't block UI)
+      console.log("🎬 Starting thumbnail generation for clip:", newClip.id, {
+        filePath: item.filePath,
+        sourceStart: newClip.sourceStart,
+        sourceEnd: newClip.sourceEnd,
+      });
+
+      window.electronAPI
+        .generateClipThumbnails(
+          item.filePath,
+          newClip.id,
+          newClip.sourceStart,
+          newClip.sourceEnd,
+          5.0, // 1 frame every 5 seconds
+        )
+        .then((thumbnails) => {
+          console.log("✅ Thumbnails generated:", thumbnails.length, "frames");
+          console.log("📸 Thumbnail paths:", thumbnails);
+
+          // Update clip with generated thumbnails
+          setProjectState((prev) => ({
+            ...prev,
+            clips: prev.clips.map((clip) =>
+              clip.id === newClip.id
+                ? { ...clip, thumbnails, thumbnailsLoading: false }
+                : clip
+            ),
+          }));
+        })
+        .catch((err) => {
+          console.error("❌ Failed to generate thumbnails:", err);
+          // Clear loading state even on error
+          setProjectState((prev) => ({
+            ...prev,
+            clips: prev.clips.map((clip) =>
+              clip.id === newClip.id
+                ? { ...clip, thumbnailsLoading: false }
+                : clip
+            ),
+          }));
+        });
     } catch (err) {
       console.error("Failed to add to timeline:", err);
       setError(
@@ -423,6 +498,11 @@ const App = () => {
             ? prev.selectedClipId
             : null,
       }));
+
+      // Clean up thumbnails for this video file (now that it's removed from library)
+      window.electronAPI.cleanupClipThumbnails(item.filePath).catch((err) => {
+        console.error("Failed to cleanup thumbnails:", err);
+      });
     } catch (err) {
       console.error("Failed to remove from library:", err);
       setError(err instanceof Error ? err.message : "Failed to remove from library");
@@ -668,6 +748,15 @@ You can click "Open Settings" below to go directly to the settings page.`;
     return clip.sourceStart + offsetIntoClip;
   };
 
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    videoPlayerRef,
+    isPlaying: projectState.isPlaying,
+    hasClips: projectState.clips.length > 0,
+    selectedClipId: projectState.selectedClipId,
+    onDeleteClip: handleClipDelete,
+  });
+
   return (
     <div className="flex flex-col h-screen bg-background text-white overflow-hidden">
       {/* Main Content Area: 3-Panel Grid (50%) + Timeline (50%) */}
@@ -707,8 +796,10 @@ You can click "Open Settings" below to go directly to the settings page.`;
                 ref={videoPlayerRef}
                 videoPath={currentClip.sourceFilePath}
                 currentTime={getSourceTimeForClip(currentClip, projectState.currentTime)}
+                displayTime={scrubDisplayTime ?? projectState.currentTime}
                 trimStart={currentClip.sourceStart}
                 trimEnd={currentClip.sourceEnd}
+                totalDuration={projectState.totalDuration}
                 onTimeUpdate={handleTimeUpdate}
                 onPlayPause={handlePlayPause}
               />
@@ -735,19 +826,11 @@ You can click "Open Settings" below to go directly to the settings page.`;
 
         {/* Bottom 50%: Timeline */}
         <div className="h-1/2 flex flex-col bg-panel overflow-hidden">
-          <div className="px-4 py-3 flex items-center justify-center relative">
+          <div className="px-4 py-3 flex items-center justify-center">
             <div className="flex items-center gap-2">
               <Film className="w-4 h-4 text-accent" />
               <h3 className="text-sm font-bold tracking-wide">Timeline</h3>
             </div>
-            {projectState.selectedClipId && (
-              <button
-                onClick={() => handleClipDelete(projectState.selectedClipId)}
-                className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded transition-colors absolute right-4 cursor-pointer"
-              >
-                Delete Selected Clip
-              </button>
-            )}
           </div>
           <div className="flex-1 overflow-auto">
             <Timeline
@@ -760,6 +843,7 @@ You can click "Open Settings" below to go directly to the settings page.`;
               onClipTrim={handleClipTrim}
               onSeek={handleSeek}
               onScrub={handleScrub}
+              onScrubEnd={handleScrubEnd}
             />
           </div>
         </div>

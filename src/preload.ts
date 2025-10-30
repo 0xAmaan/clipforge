@@ -69,6 +69,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Media library operations
   generateThumbnail: (filePath: string) =>
     ipcRenderer.invoke("generate-thumbnail", filePath),
+  generateClipThumbnails: (
+    videoPath: string,
+    clipId: string,
+    sourceStart: number,
+    sourceEnd: number,
+    frameInterval?: number,
+  ) =>
+    ipcRenderer.invoke(
+      "generate-clip-thumbnails",
+      videoPath,
+      clipId,
+      sourceStart,
+      sourceEnd,
+      frameInterval,
+    ),
+  cleanupClipThumbnails: (videoPath: string) =>
+    ipcRenderer.invoke("cleanup-clip-thumbnails", videoPath),
   getFileSize: (filePath: string) =>
     ipcRenderer.invoke("get-file-size", filePath),
   saveMediaLibrary: (items: any[]) =>

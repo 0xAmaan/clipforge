@@ -48,6 +48,14 @@ declare global {
 
       // Media library operations
       generateThumbnail: (filePath: string) => Promise<string>;
+      generateClipThumbnails: (
+        videoPath: string,
+        clipId: string,
+        sourceStart: number,
+        sourceEnd: number,
+        frameInterval?: number,
+      ) => Promise<Array<{ timestamp: number; path: string }>>;
+      cleanupClipThumbnails: (videoPath: string) => Promise<boolean>;
       getFileSize: (filePath: string) => Promise<number>;
       saveMediaLibrary: (items: MediaItem[]) => Promise<boolean>;
       loadMediaLibrary: () => Promise<MediaItem[]>;

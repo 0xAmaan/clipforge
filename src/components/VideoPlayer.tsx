@@ -22,8 +22,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     {
       videoPath,
       currentTime,
+      displayTime,
       trimStart,
       trimEnd,
+      totalDuration,
       onTimeUpdate,
       onPlayPause,
     },
@@ -157,9 +159,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
         {/* Time display overlay */}
         <div className="absolute bottom-3 left-3 flex items-center gap-1 px-2 py-1 bg-black/80 rounded text-xs text-white font-mono">
-          <span className="font-bold">{formatTime(currentTime)}</span>
+          <span className="font-bold">{formatTime(displayTime ?? currentTime)}</span>
           <span className="opacity-60">/</span>
-          <span className="opacity-80">{formatTime(trimEnd - trimStart)}</span>
+          <span className="opacity-80">{formatTime(totalDuration ?? (trimEnd - trimStart))}</span>
         </div>
       </div>
     );

@@ -1,20 +1,123 @@
-import { Rect, Group } from "react-konva";
+import { Rect, Group, Image as KonvaImage, Text } from "react-konva";
+import { useEffect, useState } from "react";
 import type { ClipItemProps } from "../types";
-import { timeToPixels } from "../utils/pixelTimeConversion";
 
 // Visual constants
-const CLIP_HEIGHT = 60;
-const CLIP_Y = 20;
+const CLIP_HEIGHT = 120;
+const CLIP_Y = 10;
 const HANDLE_WIDTH = 10;
 
 // Colors
-const CLIP_COLOR = "#3b82f6";
-const CLIP_COLOR_SELECTED = "#60a5fa";
-const CLIP_COLOR_HOVER = "#2563eb";
 const CLIP_STROKE = "#1e40af";
-const CLIP_STROKE_SELECTED = "#3b82f6";
-const HANDLE_COLOR = "#fbbf24";
-const HANDLE_COLOR_HOVER = "#f59e0b";
+const CLIP_STROKE_SELECTED = "#FFD800"; // Yellow highlight for selected clip
+
+/**
+ * Custom hook to load an image for Konva
+ */
+const useImage = (src: string | null) => {
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    if (!src) {
+      setImage(null);
+      return;
+    }
+
+    console.log("Loading image from:", src);
+
+    const img = new Image();
+    img.onload = () => {
+      console.log("Image loaded successfully:", src);
+      setImage(img);
+    };
+    img.onerror = (err) => {
+      console.error("Failed to load image:", src, err);
+      setImage(null);
+    };
+
+    // Convert file path to safe-file:// URL
+    const fileUrl = window.electronAPI.getFileUrl(src);
+    console.log("Converted to URL:", fileUrl);
+    img.src = fileUrl;
+
+    return () => {
+      img.onload = null;
+      img.onerror = null;
+    };
+  }, [src]);
+
+  return image;
+};
+
+/**
+ * Component to render a single thumbnail image in the timeline
+ */
+const ThumbnailImage = ({
+  thumbnailPath,
+  clipX,
+  clipY,
+  clipWidth,
+  clipHeight,
+  thumbnails,
+  index,
+}: {
+  thumbnailPath: string;
+  clipX: number;
+  clipY: number;
+  clipWidth: number;
+  clipHeight: number;
+  thumbnails: Array<{ timestamp: number; path: string }>;
+  index: number;
+}) => {
+  const image = useImage(thumbnailPath);
+
+  if (!image) return null;
+
+  // Calculate position and size for this thumbnail
+  // Stretch thumbnails to fill entire clip width proportionally
+  const thumbWidth = clipWidth / thumbnails.length;
+  const thumbX = clipX + index * thumbWidth;
+
+  // Calculate aspect ratio and sizing
+  // Use "cover" behavior - fill entire space, crop excess
+  const imageAspect = image.width / image.height;
+  const clipAspect = thumbWidth / clipHeight;
+
+  let renderWidth, renderHeight, offsetX, offsetY;
+
+  if (imageAspect > clipAspect) {
+    // Image is wider - fit by width to ensure no gaps
+    renderWidth = thumbWidth;
+    renderHeight = renderWidth / imageAspect;
+    offsetX = 0;
+    offsetY = (clipHeight - renderHeight) / 2;
+  } else {
+    // Image is taller - fit by height to ensure no gaps
+    renderHeight = clipHeight;
+    renderWidth = renderHeight * imageAspect;
+    offsetX = -(renderWidth - thumbWidth) / 2;
+    offsetY = 0;
+  }
+
+  return (
+    <Group
+      x={thumbX}
+      y={clipY}
+      clipX={0}
+      clipY={0}
+      clipWidth={thumbWidth}
+      clipHeight={clipHeight}
+    >
+      <KonvaImage
+        image={image}
+        x={offsetX}
+        y={offsetY}
+        width={renderWidth}
+        height={renderHeight}
+      />
+    </Group>
+  );
+};
 
 export const ClipItem = ({
   clip,
@@ -25,8 +128,11 @@ export const ClipItem = ({
   onMove,
   onTrim,
 }: ClipItemProps) => {
-  const clipX = timeToPixels(clip.timelineStart) + xOffset;
-  const clipWidth = timeToPixels(clip.duration);
+  const clipX = (clip.timelineStart * pixelsPerSecond) + xOffset;
+  const clipWidth = clip.duration * pixelsPerSecond;
+
+  // Get file name from path for text overlay
+  const fileName = clip.sourceFilePath.split('/').pop() || 'Clip';
 
   // Calculate trim handle positions relative to source video
   const leftTrimX = clipX;
@@ -79,17 +185,36 @@ export const ClipItem = ({
     onTrim(clip.sourceStart, newSourceEnd);
   };
 
-  return (
-    <Group>
-      {/* Clip Body - Draggable for reordering */}
+  // Render clip content (thumbnails or fallback)
+  const renderClipContent = () => {
+    const elements = [];
+
+    // Shadow for selected clips (rendered behind)
+    if (isSelected) {
+      elements.push(
+        <Rect
+          key="shadow"
+          x={clipX + 2}
+          y={CLIP_Y + 2}
+          width={clipWidth}
+          height={CLIP_HEIGHT}
+          fill="rgba(0, 0, 0, 0.3)"
+          cornerRadius={4}
+        />
+      );
+    }
+
+    // Background rectangle (always present for borders and fallback)
+    elements.push(
       <Rect
+        key="background"
         x={clipX}
         y={CLIP_Y}
         width={clipWidth}
         height={CLIP_HEIGHT}
-        fill={isSelected ? CLIP_COLOR_SELECTED : CLIP_COLOR}
+        fill="#1D3455" // Final Cut style blue-gray background
         stroke={isSelected ? CLIP_STROKE_SELECTED : CLIP_STROKE}
-        strokeWidth={isSelected ? 3 : 2}
+        strokeWidth={isSelected ? 2 : 1}
         cornerRadius={4}
         draggable
         onDragEnd={handleClipDragEnd}
@@ -104,23 +229,80 @@ export const ClipItem = ({
           if (container) container.style.cursor = "default";
         }}
       />
+    );
 
-      {/* Left Trim Handle */}
+    // Render thumbnails if available
+    if (clip.thumbnails && clip.thumbnails.length > 0) {
+      console.log(`Rendering ${clip.thumbnails.length} thumbnails for clip width ${clipWidth}px`);
+      clip.thumbnails.forEach((thumbnail, index) => {
+        elements.push(
+          <ThumbnailImage
+            key={`thumb-${index}`}
+            thumbnailPath={thumbnail.path}
+            clipX={clipX}
+            clipY={CLIP_Y}
+            clipWidth={clipWidth}
+            clipHeight={CLIP_HEIGHT}
+            thumbnails={clip.thumbnails!}
+            index={index}
+          />
+        );
+      });
+    }
+
+    // Loading indicator overlay
+    if (clip.thumbnailsLoading) {
+      elements.push(
+        <Text
+          key="loading"
+          x={clipX + clipWidth / 2 - 40}
+          y={CLIP_Y + CLIP_HEIGHT / 2 - 10}
+          text="Loading..."
+          fontSize={14}
+          fill="white"
+          fontStyle="bold"
+        />
+      );
+    }
+
+    // Text overlay with clip name (no background)
+    elements.push(
+      <Text
+        key="text-overlay"
+        x={clipX + 6}
+        y={CLIP_Y + 5}
+        text={fileName}
+        fontSize={13}
+        fill="white"
+        fontStyle="bold"
+        width={clipWidth - 12}
+        ellipsis={true}
+      />
+    );
+
+    return elements;
+  };
+
+  return (
+    <Group>
+      {/* Clip Body with Thumbnails */}
+      {renderClipContent()}
+
+      {/* Left Trim Area - invisible with cursor change */}
       {isSelected && (
         <Rect
           x={leftTrimX}
           y={CLIP_Y}
           width={HANDLE_WIDTH}
           height={CLIP_HEIGHT}
-          fill={HANDLE_COLOR}
-          cornerRadius={[4, 0, 0, 4]}
+          fill="transparent"
           draggable
           dragBoundFunc={(pos) => {
             // Constrain dragging to clip bounds
             return {
               x: Math.max(
-                clipX - timeToPixels(clip.sourceStart),
-                Math.min(pos.x, clipX + clipWidth - HANDLE_WIDTH - timeToPixels(0.5))
+                clipX - (clip.sourceStart * pixelsPerSecond),
+                Math.min(pos.x, clipX + clipWidth - HANDLE_WIDTH - (0.5 * pixelsPerSecond))
               ),
               y: CLIP_Y,
             };
@@ -133,25 +315,22 @@ export const ClipItem = ({
           onMouseEnter={(e) => {
             const container = e.target.getStage()?.container();
             if (container) container.style.cursor = "ew-resize";
-            e.target.fill(HANDLE_COLOR_HOVER);
           }}
           onMouseLeave={(e) => {
             const container = e.target.getStage()?.container();
             if (container) container.style.cursor = "default";
-            e.target.fill(HANDLE_COLOR);
           }}
         />
       )}
 
-      {/* Right Trim Handle */}
+      {/* Right Trim Area - invisible with cursor change */}
       {isSelected && (
         <Rect
           x={rightTrimX}
           y={CLIP_Y}
           width={HANDLE_WIDTH}
           height={CLIP_HEIGHT}
-          fill={HANDLE_COLOR}
-          cornerRadius={[0, 4, 4, 0]}
+          fill="transparent"
           draggable
           dragBoundFunc={(pos) => {
             const sourceMetadata = clip.sourceMetadata;
@@ -160,10 +339,10 @@ export const ClipItem = ({
             // Constrain dragging to clip bounds
             return {
               x: Math.max(
-                clipX + timeToPixels(0.5),
+                clipX + (0.5 * pixelsPerSecond),
                 Math.min(
                   pos.x,
-                  clipX + timeToPixels(maxSourceEnd - clip.sourceStart) - HANDLE_WIDTH
+                  clipX + ((maxSourceEnd - clip.sourceStart) * pixelsPerSecond) - HANDLE_WIDTH
                 )
               ),
               y: CLIP_Y,
@@ -177,12 +356,10 @@ export const ClipItem = ({
           onMouseEnter={(e) => {
             const container = e.target.getStage()?.container();
             if (container) container.style.cursor = "ew-resize";
-            e.target.fill(HANDLE_COLOR_HOVER);
           }}
           onMouseLeave={(e) => {
             const container = e.target.getStage()?.container();
             if (container) container.style.cursor = "default";
-            e.target.fill(HANDLE_COLOR);
           }}
         />
       )}

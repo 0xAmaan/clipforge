@@ -7,7 +7,7 @@ import { ClipItem } from './ClipItem';
 /**
  * Timeline component - Canvas-based timeline using Konva
  * Shows multiple video clips, playhead, trim handles, and time markers
- * Supports drag-to-reorder, per-clip trimming, and scroll wheel zoom
+ * Supports drag-to-reorder, per-clip trimming, and horizontal scrolling for long timelines
  */
 export const Timeline = ({
   clips,
@@ -19,9 +19,9 @@ export const Timeline = ({
   onClipTrim,
   onSeek,
   onScrub,
+  onScrubEnd,
 }: MultiClipTimelineProps) => {
-  // Zoom state (pixels per second)
-  const [basePixelsPerSecond, setBasePixelsPerSecond] = useState(20);
+  // Container width tracking
   const [containerWidth, setContainerWidth] = useState(800);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -33,8 +33,6 @@ export const Timeline = ({
 
   // Constants
   const CLIP_HEIGHT = 120; // Doubled from 60px
-  const MIN_ZOOM = 5; // Minimum pixels per second
-  const MAX_ZOOM = 100; // Maximum pixels per second
   const PLAYHEAD_COLOR = '#9CA3AF'; // Gray for actual playhead
   const SCRUBBER_COLOR = '#EF4444'; // Red for hover scrubber
   const MARKER_COLOR = 'white';
@@ -47,16 +45,15 @@ export const Timeline = ({
   // Calculate effective timeline duration (minimum 5 minutes)
   const effectiveDuration = Math.max(DEFAULT_TIMELINE_DURATION, totalDuration);
 
-  // Padding for timestamp text (to prevent cutoff at edges)
+  // Padding for timestamp text (to prevent cutoff at edges) - ONLY for text labels, not functional positioning
   const TEXT_PADDING = 60; // 30px on each side for timestamp text visibility
 
-  // Calculate pixels per second based on whether we need to fit or scroll
-  const pixelsPerSecond = effectiveDuration <= DEFAULT_TIMELINE_DURATION
-    ? Math.max((containerWidth - TEXT_PADDING) / DEFAULT_TIMELINE_DURATION, 1)
-    : basePixelsPerSecond;
+  // Calculate pixels per second: fit 5 minutes in view, then become scrollable for longer durations
+  const PIXELS_PER_SECOND = containerWidth / DEFAULT_TIMELINE_DURATION;
 
-  // Calculate timeline width (add padding back for the canvas)
-  const TIMELINE_WIDTH = (effectiveDuration * pixelsPerSecond) + TEXT_PADDING;
+  // Calculate timeline width - add extra padding so end markers don't get cut off
+  // The extra width allows the 5:00 marker text to be fully visible
+  const TIMELINE_WIDTH = effectiveDuration * PIXELS_PER_SECOND + 50; // Padding for marker text (25px on each side)
 
   // Update container width on resize
   useEffect(() => {
@@ -71,32 +68,13 @@ export const Timeline = ({
     return () => window.removeEventListener('resize', updateWidth);
   }, []);
 
-  // Helper functions for pixel conversion with current zoom
-  const timeToPixelsZoomed = (time: number): number => {
-    return time * pixelsPerSecond;
+  // Helper functions for pixel conversion
+  const timeToPixels = (time: number): number => {
+    return time * PIXELS_PER_SECOND;
   };
 
-  const pixelsToTimeZoomed = (pixels: number): number => {
-    return pixels / pixelsPerSecond;
-  };
-
-  /**
-   * Handle scroll wheel zoom
-   */
-  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    // Only zoom when Ctrl/Cmd is pressed (standard zoom gesture)
-    if (!e.ctrlKey && !e.metaKey) {
-      return;
-    }
-
-    e.preventDefault();
-
-    const zoomDelta = e.deltaY > 0 ? 0.9 : 1.1; // Zoom out or in
-    const newZoom = basePixelsPerSecond * zoomDelta;
-
-    // Clamp zoom level
-    const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
-    setBasePixelsPerSecond(clampedZoom);
+  const pixelsToTime = (pixels: number): number => {
+    return pixels / PIXELS_PER_SECOND;
   };
 
   /**
@@ -107,7 +85,7 @@ export const Timeline = ({
     const stage = e.target.getStage();
     const pointerPosition = stage.getPointerPosition();
     if (pointerPosition) {
-      const hoveredTime = pixelsToTimeZoomed(pointerPosition.x);
+      const hoveredTime = pixelsToTime(pointerPosition.x);
       const clampedTime = Math.max(0, Math.min(effectiveDuration, hoveredTime));
 
       // Update scrubber position immediately for visual feedback
@@ -138,6 +116,10 @@ export const Timeline = ({
       cancelAnimationFrame(scrubAnimationFrameRef.current);
       scrubAnimationFrameRef.current = null;
     }
+    // Notify parent that scrubbing has ended
+    if (onScrubEnd) {
+      onScrubEnd();
+    }
   };
 
   // Cleanup animation frame on unmount
@@ -156,7 +138,7 @@ export const Timeline = ({
     const stage = e.target.getStage();
     const pointerPosition = stage.getPointerPosition();
     if (pointerPosition) {
-      const clickedTime = pixelsToTimeZoomed(pointerPosition.x);
+      const clickedTime = pixelsToTime(pointerPosition.x);
       // Clamp to effective timeline duration
       const clampedTime = Math.max(0, Math.min(effectiveDuration, clickedTime));
       onSeek(clampedTime);
@@ -179,7 +161,7 @@ export const Timeline = ({
       {/* Time markers row */}
       <div
         ref={timestampScrollRef}
-        className="relative h-6 overflow-x-hidden overflow-y-hidden flex-shrink-0 bg-[#2a2a2a] flex items-center"
+        className="relative h-6 overflow-x-auto overflow-y-hidden flex-shrink-0 bg-[#2a2a2a] flex items-center"
         style={{
           scrollbarWidth: 'none',
           msOverflowStyle: 'none',
@@ -194,28 +176,44 @@ export const Timeline = ({
         >
           {(() => {
             const markers = [];
-            const interval = pixelsPerSecond > 40 ? 5 : pixelsPerSecond > 20 ? 10 : 20;
-            const markerCount = Math.ceil(effectiveDuration / interval) + 1;
+            const interval = 30; // 30 second intervals
 
-            for (let i = 0; i <= markerCount; i++) {
-              const time = i * interval;
-              if (time > effectiveDuration) break;
-
-              const x = timeToPixelsZoomed(time) + (TEXT_PADDING / 2); // Add offset for visibility
+            // Add markers at regular intervals
+            for (let time = 0; time < effectiveDuration; time += interval) {
+              const x = timeToPixels(time);
+              // Special case for 0:00 - left align with small padding to prevent cutoff
+              const isStart = time === 0;
               markers.push(
                 <div
-                  key={`marker-${i}`}
+                  key={`marker-${time}`}
                   className="absolute text-xs text-gray-400 font-mono"
                   style={{
-                    left: `${x}px`,
+                    left: isStart ? `${x + 10}px` : `${x}px`,
                     top: '50%',
-                    transform: 'translate(-50%, -50%)',
+                    transform: isStart ? 'translateY(-50%)' : 'translate(-50%, -50%)',
                   }}
                 >
                   {formatTime(time)}
                 </div>
               );
             }
+
+            // Always add the final marker at the end - right aligned with padding to prevent cutoff
+            const finalX = timeToPixels(effectiveDuration);
+            markers.push(
+              <div
+                key={`marker-${effectiveDuration}`}
+                className="absolute text-xs text-gray-400 font-mono"
+                style={{
+                  left: `${finalX - 10}px`,
+                  top: '50%',
+                  transform: 'translate(-100%, -50%)', // Right align instead of center
+                }}
+              >
+                {formatTime(effectiveDuration)}
+              </div>
+            );
+
             return markers;
           })()}
         </div>
@@ -225,49 +223,16 @@ export const Timeline = ({
       <div
         ref={containerRef}
         className="flex-1 overflow-x-auto overflow-y-hidden relative"
-        onWheel={handleWheel}
         onScroll={handleCanvasScroll}
         style={{ cursor: 'default', display: 'flex', alignItems: 'center' }}
       >
-        {/* Invisible overlay for capturing mouse events across full container */}
-        <div
-          className="absolute inset-0 z-30"
-          style={{ cursor: 'default' }}
-          onMouseMove={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const x = e.clientX - rect.left + containerRef.current!.scrollLeft;
-            const hoveredTime = pixelsToTimeZoomed(x - (TEXT_PADDING / 2));
-            const clampedTime = Math.max(0, Math.min(effectiveDuration, hoveredTime));
-            setScrubberTime(clampedTime);
-            setIsHovering(true);
-
-            // Throttle video preview updates with requestAnimationFrame
-            if (onScrub && scrubAnimationFrameRef.current === null) {
-              scrubAnimationFrameRef.current = requestAnimationFrame(() => {
-                if (Math.abs(clampedTime - lastScrubTimeRef.current) > 0.1) {
-                  onScrub(clampedTime);
-                  lastScrubTimeRef.current = clampedTime;
-                }
-                scrubAnimationFrameRef.current = null;
-              });
-            }
-          }}
-          onMouseLeave={handleTimelineMouseLeave}
-          onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const x = e.clientX - rect.left + containerRef.current!.scrollLeft;
-            const clickedTime = pixelsToTimeZoomed(x - (TEXT_PADDING / 2));
-            const clampedTime = Math.max(0, Math.min(effectiveDuration, clickedTime));
-            onSeek(clampedTime);
-          }}
-        />
 
         {/* Scrubber line (red - shows on hover) - z-index: 10 */}
         {isHovering && (
           <div
             className="absolute pointer-events-none"
             style={{
-              left: `${timeToPixelsZoomed(scrubberTime) + (TEXT_PADDING / 2)}px`,
+              left: `${timeToPixels(scrubberTime)}px`,
               top: '-24px', // Extend up into timestamp area (24px = 6px timestamp height)
               width: '2px',
               height: 'calc(100% + 24px)',
@@ -281,7 +246,7 @@ export const Timeline = ({
         <div
           className="absolute pointer-events-none"
           style={{
-            left: `${timeToPixelsZoomed(currentTime) + (TEXT_PADDING / 2)}px`,
+            left: `${timeToPixels(currentTime)}px`,
             top: '-24px', // Extend up into timestamp area
             width: '2px',
             height: 'calc(100% + 24px)',
@@ -293,15 +258,18 @@ export const Timeline = ({
       <Stage
         width={TIMELINE_WIDTH}
         height={TIMELINE_HEIGHT}
+        onMouseMove={handleTimelineMouseMove}
+        onMouseLeave={handleTimelineMouseLeave}
       >
         <Layer>
-          {/* Background */}
+          {/* Background - capture clicks for seeking */}
           <Rect
             x={0}
             y={0}
             width={TIMELINE_WIDTH}
             height={TIMELINE_HEIGHT}
             fill="#1a1a1a"
+            onClick={handleTimelineClick}
           />
 
           {/* Empty timeline track - visible when no clips */}
@@ -320,8 +288,8 @@ export const Timeline = ({
               key={clip.id}
               clip={clip}
               isSelected={clip.id === selectedClipId}
-              pixelsPerSecond={pixelsPerSecond}
-              xOffset={TEXT_PADDING / 2}
+              pixelsPerSecond={PIXELS_PER_SECOND}
+              xOffset={0}
               onSelect={() => onClipSelect(clip.id)}
               onMove={(newTimelineStart) => onClipMove(clip.id, newTimelineStart)}
               onTrim={(newSourceStart, newSourceEnd) =>
@@ -332,11 +300,6 @@ export const Timeline = ({
 
         </Layer>
       </Stage>
-
-        {/* Zoom indicator */}
-        <div className="absolute bottom-2 right-2 px-2 py-1 bg-black/50 rounded text-xs text-white font-mono">
-          Zoom: {Math.round((pixelsPerSecond / 20) * 100)}% (Ctrl+Scroll)
-        </div>
       </div>
     </div>
   );
